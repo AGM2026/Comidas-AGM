@@ -66,16 +66,18 @@ body{background:var(--paper);color:var(--ink);font-family:'Space Grotesk',system
 .fixed-pill b{color:var(--ink);}
 h3.section-title{font-size:.95rem;margin:26px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line);}
 .table-scroll{overflow-x:auto;border:1px solid var(--line);}
-table.roster{border-collapse:collapse;width:100%;min-width:700px;font-size:.8rem;}
+table.roster{border-collapse:separate;border-spacing:0;width:100%;min-width:700px;font-size:.8rem;}
 table.roster th,table.roster td{border-bottom:1px solid var(--line);border-right:1px solid var(--line);padding:7px 6px;text-align:center;}
 table.roster th:last-child,table.roster td:last-child{border-right:none;}
 table.roster thead th{background:var(--paper-alt);font-weight:600;font-size:.7rem;color:var(--ink-soft);position:sticky;top:0;z-index:2;}
 table.roster thead tr.daynames th{font-size:.72rem;color:var(--ink);border-bottom:none;}
-table.roster td.name-cell,table.roster th.name-cell{text-align:left;position:sticky;left:0;background:var(--card);white-space:nowrap;min-width:150px;z-index:1;}
+table.roster td.name-cell,table.roster th.name-cell{text-align:left;position:sticky;left:0;background:var(--card);white-space:normal;word-break:break-word;line-height:1.2;min-width:88px;max-width:110px;z-index:1;}
 table.roster thead th.name-cell{background:var(--paper-alt);z-index:3;top:0;}
 table.roster tr.me td.name-cell{font-weight:700;color:var(--olive);}
 table.roster tr.me{background:rgba(78,92,60,.07);}
 table.roster tfoot td{font-weight:700;background:var(--paper-alt);}
+.count-full{background:rgba(78,92,60,.28) !important;color:var(--olive) !important;font-weight:700;}
+.count-zero{background:rgba(160,63,44,.16) !important;color:var(--danger) !important;}
 table.roster tfoot td.name-cell{text-align:left;}
 .chk{width:16px;height:16px;cursor:default;accent-color:var(--olive);}
 .chk.editable{cursor:pointer;}
@@ -317,11 +319,22 @@ const WEEKS = buildWeeks(8);
 let weekIndex = 0;
 let ACTIVE_WEEK = WEEKS[0];
 function setActiveWeek(idx){ weekIndex = idx; ACTIVE_WEEK = WEEKS[idx]; }
+let CORTES_ESPECIALES = {}; // semana_inicio (clave) -> timestamp ISO del corte especial de esa semana
+async function fetchCortesEspeciales(compania){
+  const { data } = await sb.from('cortes_especiales').select('semana_inicio,corte_en').eq('compania', compania);
+  CORTES_ESPECIALES = {};
+  (data||[]).forEach(r=>{ CORTES_ESPECIALES[r.semana_inicio] = r.corte_en; });
+}
 function cutoffFor(week, horaCorte){
+  if(CORTES_ESPECIALES[week.key]) return new Date(CORTES_ESPECIALES[week.key]);
   const cutoff = new Date(week.days[0]); cutoff.setDate(week.days[0].getDate()-4);
   const [hh,mm] = (horaCorte||'10:00:00').split(':').map(Number);
   cutoff.setHours(hh, mm, 0, 0);
   return cutoff;
+}
+function toDatetimeLocalValue(date){
+  const pad = n=>String(n).padStart(2,'0');
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 function weekIsOpen(week, horaCorte){ return new Date() <= cutoffFor(week, horaCorte); }
 function fmtHora(horaCorte){ const [hh,mm]=(horaCorte||'10:00:00').split(':'); return `${hh}:${mm}`; }
@@ -359,6 +372,11 @@ function buildColumnsForWeek(week){
   return cols;
 }
 function COLS(){ return buildColumnsForWeek(ACTIVE_WEEK); }
+function countCellClass(n, total){
+  if(total>0 && n===total) return 'count-full';
+  if(n===0) return 'count-zero';
+  return '';
+}
 function isCurrentMealColumn(col){
   const now = new Date();
   const todayStr = ymd(now);
@@ -572,6 +590,7 @@ async function enterAlumno(persona, adminCompania){
   const { data: seccion } = await sb.from('personas').select('*').eq('compania', persona.compania).eq('seccion', persona.seccion).order('apellidos');
   CURRENT = { mode:'alumno', persona, seccionPeople: seccion || [persona], adminCompania: adminCompania || null };
   EXTERNADOS = new Set((seccion||[persona]).filter(p=>p.externado).map(p=>p.id));
+  await fetchCortesEspeciales(persona.compania);
   showScreen('screen-alumno');
   weekIndex = 0; setActiveWeek(0);
   await setModule('comidas');
@@ -625,7 +644,7 @@ async function renderAlumno(){
   let tfoot = '<tfoot><tr><td class="name-cell">Total sección (marcados)</td>';
   cols.forEach(c=>{
     const n = seccionPeople.filter(p=>getVal(p.id,c,apuntesMap)).length;
-    tfoot += `<td class="mono ${isCurrentMealColumn(c)?'col-today':''}">${n}/${seccionPeople.length}</td>`;
+    tfoot += `<td class="mono ${isCurrentMealColumn(c)?'col-today':''} ${countCellClass(n, seccionPeople.length)}">${n}/${seccionPeople.length}</td>`;
   });
   tfoot += '</tr></tfoot>';
   table.innerHTML = thead+tbody+tfoot;
@@ -708,6 +727,7 @@ async function toggleMine(type, day, obligatorio, checked){
 async function enterAdmin(compania, linkedPersona){
   const { data: companiaInfo } = await sb.from('companias').select('*').eq('numero', compania).single();
   CURRENT = { mode:'admin', compania, companiaInfo, linkedPersona: linkedPersona || null };
+  await fetchCortesEspeciales(compania);
   showScreen('screen-admin');
   weekIndex = 0; setActiveWeek(0);
   await setModule('comidas');
@@ -757,6 +777,16 @@ async function renderAdmin(){
           <span class="sub2">Hasta esta hora del lunes se puede apuntar la gente a la semana que empieza el viernes siguiente</span>
         </div>
         <input type="time" value="${fmtHora(companiaInfo.hora_corte)}" style="width:auto;padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;" onchange="updateCutoffHour(this.value)">
+      </div>
+      <div class="panel-row" style="flex-direction:column;align-items:stretch;">
+        <div class="switch-label">Corte especial para la semana seleccionada
+          <span class="sub2">${CORTES_ESPECIALES[ACTIVE_WEEK.key] ? 'Esta semana tiene un corte distinto del normal (afecta a Comidas y Pernoctas)' : 'Por si alguna semana necesita un día/hora de cierre distinto del resto (afecta a Comidas y Pernoctas)'}</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+          <input type="datetime-local" id="corte-especial-input" value="${toDatetimeLocalValue(cutoffFor(ACTIVE_WEEK, companiaInfo.hora_corte))}" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;">
+          <button class="small-btn" onclick="guardarCorteEspecial()">Guardar para esta semana</button>
+          ${CORTES_ESPECIALES[ACTIVE_WEEK.key] ? `<button class="small-btn danger" onclick="quitarCorteEspecial()">Quitar (volver al normal)</button>` : ''}
+        </div>
       </div>
       <div class="panel-row">
         <div class="switch-label">Exportar la tabla de la ${c}ª Compañía (semana seleccionada)<span class="sub2">Una hoja por sección, lista para imprimir</span></div>
@@ -829,6 +859,26 @@ async function updateCutoffHour(value){
   if(error){ showToast('No se pudo cambiar la hora: '+error.message); return; }
   showToast('Hora de cierre actualizada a las '+value+'.');
   await renderAdmin();
+}
+async function guardarCorteEspecial(){
+  const value = document.getElementById('corte-especial-input').value;
+  if(!value){ showToast('Elige fecha y hora.'); return; }
+  const iso = new Date(value).toISOString();
+  const { error } = await sb.from('cortes_especiales').upsert(
+    { compania: CURRENT.compania, semana_inicio: ACTIVE_WEEK.key, corte_en: iso },
+    { onConflict: 'compania,semana_inicio' }
+  );
+  if(error){ showToast('No se pudo guardar: '+error.message); return; }
+  await fetchCortesEspeciales(CURRENT.compania);
+  showToast('Corte especial guardado para esta semana.');
+  await (currentModule==='pernoctas' ? renderAdminPernoctas() : renderAdmin());
+}
+async function quitarCorteEspecial(){
+  const { error } = await sb.from('cortes_especiales').delete().eq('compania', CURRENT.compania).eq('semana_inicio', ACTIVE_WEEK.key);
+  if(error){ showToast('No se pudo quitar: '+error.message); return; }
+  await fetchCortesEspeciales(CURRENT.compania);
+  showToast('Corte especial eliminado — esta semana vuelve al horario normal.');
+  await (currentModule==='pernoctas' ? renderAdminPernoctas() : renderAdmin());
 }
 async function toggleUnlock(checked){
   const { error } = await sb.from('companias').update({permitir_desbloqueo: checked}).eq('numero', CURRENT.compania);
@@ -1135,7 +1185,7 @@ function adminDetailTable(sec, apuntesMap){
   });
   tbody += '</tbody>';
   let tfoot = '<tfoot><tr><td class="name-cell">Total</td>';
-  cols.forEach(c=>{ const n = sec.people.filter(p=>getVal(p.id,c,apuntesMap)).length; tfoot += `<td class="mono">${n}/${sec.people.length}</td>`; });
+  cols.forEach(c=>{ const n = sec.people.filter(p=>getVal(p.id,c,apuntesMap)).length; tfoot += `<td class="mono ${countCellClass(n, sec.people.length)}">${n}/${sec.people.length}</td>`; });
   tfoot += '</tr></tfoot>';
   return `<div class="admin-edit-note">Modo administración: puedes marcar o desmarcar cualquier casilla, incluidas las obligatorias.</div>
     <div class="table-scroll"><table class="roster admin-edit">${thead}${tbody}${tfoot}</table></div>`;
@@ -1158,7 +1208,7 @@ function comidaViewOnlyTable(sec, apuntesMap){
   });
   tbody += '</tbody>';
   let tfoot = '<tfoot><tr><td class="name-cell">Total</td>';
-  cols.forEach(c=>{ const n = sec.people.filter(p=>getVal(p.id,c,apuntesMap)).length; tfoot += `<td class="mono">${n}/${sec.people.length}</td>`; });
+  cols.forEach(c=>{ const n = sec.people.filter(p=>getVal(p.id,c,apuntesMap)).length; tfoot += `<td class="mono ${countCellClass(n, sec.people.length)}">${n}/${sec.people.length}</td>`; });
   tfoot += '</tr></tfoot>';
   return `<div class="admin-edit-note">Solo consulta — para cambiar algo usa "Editar ${sec.code}"</div>
     <div class="table-scroll"><table class="roster">${thead}${tbody}${tfoot}</table></div>`;
@@ -1169,7 +1219,7 @@ async function companyBlockHtml(c, secciones, apuntesMap, confirmMap){
   let rows = '';
   secciones.forEach(sec=>{
     rows += `<tr><td class="name-cell"><button class="small-btn" style="border:none;background:none;padding:0;font-weight:600;color:var(--ink);text-decoration:underline;cursor:pointer;" onclick="toggleSectionView('${sec.code}')">${sec.code}</button> <span style="color:var(--ink-soft)">(${sec.people.length})</span></td>`;
-    cols.forEach(col=>{ const n = sec.people.filter(p=>getVal(p.id,col,apuntesMap)).length; rows += `<td class="mono">${n}/${sec.people.length}</td>`; });
+    cols.forEach(col=>{ const n = sec.people.filter(p=>getVal(p.id,col,apuntesMap)).length; rows += `<td class="mono ${countCellClass(n, sec.people.length)}">${n}/${sec.people.length}</td>`; });
     rows += '</tr>';
   });
   let thead = '<thead><tr class="daynames"><th class="name-cell">Sección</th>';
@@ -1320,7 +1370,7 @@ async function renderAlumnoPernoctas(){
 
   const totalsHtml = Array.from({length:pernoctaDiasCount()},(_,i)=>i).map(d=>{
     const n = seccionPeople.filter(p=>valFor(p.id,d)).length;
-    return `<span>${DAY_NAMES[d]}: ${n}/${seccionPeople.length} en AGM</span>`;
+    return `<span class="${countCellClass(n, seccionPeople.length)}" style="padding:2px 6px;">${DAY_NAMES[d]}: ${n}/${seccionPeople.length} en AGM</span>`;
   }).join('');
   document.getElementById('alumno-pernocta-totalbar').innerHTML = `<span>Total sección ${code}</span>${totalsHtml}`;
 
@@ -1405,7 +1455,7 @@ function pernoctaDetailTable(sec, pernMap){
   });
   tbody += '</tbody>';
   let tfoot = '<tfoot><tr><td class="name-cell">Total AGM</td>';
-  for(let d=0; d<pernoctaDiasCount(); d++){ const n = sec.people.filter(p=>valFor(p.id,d)).length; tfoot += `<td class="mono">${n}/${sec.people.length}</td>`; }
+  for(let d=0; d<pernoctaDiasCount(); d++){ const n = sec.people.filter(p=>valFor(p.id,d)).length; tfoot += `<td class="mono ${countCellClass(n, sec.people.length)}">${n}/${sec.people.length}</td>`; }
   tfoot += '</tr></tfoot>';
   return `<div class="admin-edit-note">Modo administración: puedes cambiar cualquier casilla y ver las direcciones.</div>
     <div class="table-scroll"><table class="roster admin-edit">${thead}${tbody}${tfoot}</table></div>`;
@@ -1431,7 +1481,7 @@ function pernoctaViewOnlyTable(sec, pernMap){
   });
   tbody += '</tbody>';
   let tfoot = '<tfoot><tr><td class="name-cell">Total AGM</td>';
-  for(let d=0; d<n; d++){ const c = sec.people.filter(p=>valFor(p.id,d)).length; tfoot += `<td class="mono">${c}/${sec.people.length}</td>`; }
+  for(let d=0; d<n; d++){ const c = sec.people.filter(p=>valFor(p.id,d)).length; tfoot += `<td class="mono ${countCellClass(c, sec.people.length)}">${c}/${sec.people.length}</td>`; }
   tfoot += '</tr></tfoot>';
   return `<div class="admin-edit-note">Solo consulta — para cambiar algo usa "Editar ${sec.code}"</div>
     <div class="table-scroll"><table class="roster">${thead}${tbody}${tfoot}</table></div>`;
@@ -1441,7 +1491,7 @@ function pernoctaCompanyBlockHtml(c, secciones, pernMap){
   let rows='';
   secciones.forEach(sec=>{
     rows += `<tr><td class="name-cell"><button class="small-btn" style="border:none;background:none;padding:0;font-weight:600;color:var(--ink);text-decoration:underline;cursor:pointer;" onclick="togglePernoctaView('${sec.code}')">${sec.code}</button> <span style="color:var(--ink-soft)">(${sec.people.length})</span></td>`;
-    for(let d=0; d<pernoctaDiasCount(); d++){ const n = sec.people.filter(p=>valFor(p.id,d)).length; rows += `<td class="mono">${n}/${sec.people.length}</td>`; }
+    for(let d=0; d<pernoctaDiasCount(); d++){ const n = sec.people.filter(p=>valFor(p.id,d)).length; rows += `<td class="mono ${countCellClass(n, sec.people.length)}">${n}/${sec.people.length}</td>`; }
     rows += '</tr>';
   });
   let thead = '<thead><tr class="daynames"><th class="name-cell">Sección</th>';
