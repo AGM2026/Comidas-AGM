@@ -27,7 +27,7 @@ html{scroll-padding-top:env(safe-area-inset-top,0px);}
 *{box-sizing:border-box;}
 html,body{height:100%;margin:0;}
 body{background:var(--paper);color:var(--ink);font-family:'Space Grotesk',system-ui,sans-serif;-webkit-font-smoothing:antialiased;}
-.version-banner{text-align:center;background:var(--brass);color:#1B2019;font-size:.72rem;font-weight:700;letter-spacing:.02em;padding:6px 10px;padding-top:calc(6px + env(safe-area-inset-top,0px));}
+.version-tag{text-align:center;color:var(--ink-soft);font-size:.68rem;margin-top:4px;font-weight:500;}
 .mono{font-family:'JetBrains Mono',ui-monospace,monospace;}
 .wrap{max-width:880px;margin:0 auto;padding:28px 18px 60px;}
 .hidden{display:none !important;}
@@ -210,7 +210,6 @@ body.mod-servicios h3.section-title{border-bottom-color:var(--brass);}
 </style>
 </head>
 <body>
-<div class="version-banner">🧪 Versión de prueba — v31</div>
 <div class="wrap">
 
   <div id="screen-loading" class="loading">Cargando…</div>
@@ -221,6 +220,7 @@ body.mod-servicios h3.section-title{border-bottom-color:var(--brass);}
       <img class="brand-logo" alt="AGM">
       <h1>PORTAL AGM</h1>
       <div class="sub">Comidas y pernoctas · academia</div>
+      <div class="version-tag">v1.0</div>
     </div>
 
     <div class="login-card" id="login-card">
@@ -619,18 +619,30 @@ async function setModule(mod){
 
 /* ================= Arranque: recuperar sesión ================= */
 async function boot(){
-  const { data: { session } } = await sb.auth.getSession();
-  if(session){ await routeAfterAuth(session.user.id); }
-  else { showScreen('screen-login'); }
+  try{
+    const { data: { session } } = await sb.auth.getSession();
+    if(session){ await routeAfterAuth(session.user.id); }
+    else { showScreen('screen-login'); }
+  }catch(e){
+    console.error('Error al arrancar:', e);
+    showScreen('screen-login');
+    showToast('No se pudo cargar tu sesión. Prueba a recargar la página, o entra de nuevo con tu email y contraseña.');
+  }
 }
 async function routeAfterAuth(userId){
-  const { data: adminRow } = await sb.from('admins').select('compania').eq('auth_user_id', userId).maybeSingle();
-  const { data: personaRow } = await sb.from('personas').select('*').eq('auth_user_id', userId).maybeSingle();
-  if(adminRow){ await enterAdmin(adminRow.compania, personaRow || null); return; }
-  if(personaRow){ await enterAlumno(personaRow, null); return; }
-  await sb.auth.signOut();
-  showScreen('screen-login');
-  showToast('Tu cuenta no está vinculada a ningún alumno ni administrador todavía.');
+  try{
+    const { data: adminRow } = await sb.from('admins').select('compania').eq('auth_user_id', userId).maybeSingle();
+    const { data: personaRow } = await sb.from('personas').select('*').eq('auth_user_id', userId).maybeSingle();
+    if(adminRow){ await enterAdmin(adminRow.compania, personaRow || null); return; }
+    if(personaRow){ await enterAlumno(personaRow, null); return; }
+    await sb.auth.signOut();
+    showScreen('screen-login');
+    showToast('Tu cuenta no está vinculada a ningún alumno ni administrador todavía.');
+  }catch(e){
+    console.error('Error al entrar:', e);
+    showScreen('screen-login');
+    showToast('Algo falló al cargar tu cuenta. Prueba a recargar, o entra de nuevo.');
+  }
 }
 boot();
 
@@ -708,4 +720,1620 @@ async function doRegister(){
 
   // Si la semana más próxima ya tiene el plazo cerrado, no tiene sentido pedirle
   // que confirme algo a lo que ha llegado tarde: se le marca como confirmado solo.
-  cons
+  const { data: ciReg } = await sb.from('companias').select('hora_corte').eq('numero', compania).single();
+  await fetchCortesEspeciales(compania);
+  if(!weekIsOpen(WEEKS[0], ciReg ? ciReg.hora_corte : '10:00:00')){
+    const nowIso = new Date().toISOString();
+    await sb.from('confirmaciones').upsert({ persona_id: personaId, semana_inicio: WEEKS[0].key, confirmado: true, confirmado_en: nowIso }, { onConflict: 'persona_id,semana_inicio' });
+    await sb.from('confirmaciones_pernocta').upsert({ persona_id: personaId, semana_inicio: WEEKS[0].key, confirmado: true, confirmado_en: nowIso }, { onConflict: 'persona_id,semana_inicio' });
+  }
+
+  btn.disabled = false;
+  await enterAlumno(personaRow);
+}
+async function doLogin(){
+  const btn = document.getElementById('login-btn'); btn.disabled = true;
+  const err = document.getElementById('login-error'); err.classList.add('hidden');
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  btn.disabled = false;
+  if(error){ err.textContent = 'Email o contraseña incorrectos.'; err.classList.remove('hidden'); return; }
+  await routeAfterAuth(data.user.id);
+}
+async function doLogout(){
+  await sb.auth.signOut();
+  CURRENT = null;
+  showScreen('screen-login');
+  switchAuthTab('login');
+}
+
+/* ================= Notice ================= */
+function noticeHtml(week, horaCorte){
+  if(weekIsOpen(week, horaCorte)) return `<div class="plazo-banner abierto"><div class="titulo">🟢 PLAZO ABIERTO — puedes marcar tus comidas</div><span class="sub">Semana del viernes ${fmt(week.days[0])} al jueves ${fmt(week.days[6])}<br>Cierra el <b>${fmtCutoff(week, horaCorte)}</b></span></div>`;
+  return `<div class="plazo-banner cerrado"><div class="titulo">🔴 PLAZO CERRADO — ya no se puede editar</div><span class="sub">Se cerró el <b>${fmtCutoff(week, horaCorte)}</b></span></div>`;
+}
+function noticeHtmlWeekend(week, horaCorte){
+  const n = pernoctaDiasCountFor(week);
+  const extra = n>2 ? ' — puente' : '';
+  if(weekIsOpen(week, horaCorte)) return `<div class="plazo-banner abierto"><div class="titulo">🟢 PLAZO ABIERTO — puedes marcar dónde duermes</div><span class="sub">Fin de semana del ${fmt(week.days[0])} al ${fmt(week.days[n-1])}${extra}<br>Cierra el <b>${fmtCutoff(week, horaCorte)}</b></span></div>`;
+  return `<div class="plazo-banner cerrado"><div class="titulo">🔴 PLAZO CERRADO — ya no se puede editar</div><span class="sub">Se cerró el <b>${fmtCutoff(week, horaCorte)}</b></span></div>`;
+}
+
+/* ================= Datos: apuntes ================= */
+async function fetchConfirmMap(personaIds, semanaKey){
+  const map = {};
+  if(personaIds.length===0) return map;
+  const { data } = await sb.from('confirmaciones').select('persona_id,confirmado').eq('semana_inicio', semanaKey).in('persona_id', personaIds);
+  (data||[]).forEach(row=>{ map[row.persona_id] = row.confirmado; });
+  return map;
+}
+async function setConfirm(personaId, checked){
+  const { error } = await sb.from('confirmaciones').upsert(
+    { persona_id: personaId, semana_inicio: ACTIVE_WEEK.key, confirmado: checked, confirmado_en: checked ? new Date().toISOString() : null },
+    { onConflict: 'persona_id,semana_inicio' }
+  );
+  if(error) showToast('No se pudo guardar: '+error.message);
+  return !error;
+}
+async function fetchApuntesMap(personaIds, semanaKey){
+  const map = {};
+  if(personaIds.length===0) return map;
+  const { data } = await sb.from('apuntes').select('persona_id,tipo,dia,valor').eq('semana_inicio', semanaKey).in('persona_id', personaIds);
+  (data||[]).forEach(row=>{ map[row.persona_id+'|'+row.tipo+'|'+row.dia] = row.valor; });
+  return map;
+}
+let EXTERNADOS = new Set();
+let PERNOCTA_SABADO_AGM = new Set(); // quiénes durmieron en la AGM el sábado (según Pernoctas) — les hace obligatorio el desayuno del domingo
+function effectiveObligatorio(personaId, col){
+  if(col.type==='desayuno' && col.day===1 && EXTERNADOS.has(personaId)) return false; // externado: sábado no obligatorio
+  if(col.type==='desayuno' && col.day===2) return PERNOCTA_SABADO_AGM.has(personaId); // domingo: obligatorio solo si durmió en la AGM el sábado
+  return !!col.obligatorio;
+}
+async function fetchPernoctaSabadoAgmSetSeccion(compania, seccion, semanaKey){
+  const set = new Set();
+  const { data } = await sb.rpc('pernoctas_de_seccion', { p_compania:compania, p_seccion:seccion, p_semana:semanaKey });
+  (data||[]).forEach(r=>{ if(r.dia===1 && r.duerme_agm) set.add(r.persona_id); });
+  return set;
+}
+async function fetchPernoctaSabadoAgmSetCompania(compania, semanaKey){
+  const set = new Set();
+  for(let s=1; s<=SECTIONS_PER_COMPANY; s++){
+    const { data } = await sb.rpc('pernoctas_de_seccion', { p_compania:compania, p_seccion:s, p_semana:semanaKey });
+    (data||[]).forEach(r=>{ if(r.dia===1 && r.duerme_agm) set.add(r.persona_id); });
+  }
+  return set;
+}
+function getVal(personaId, col, apuntesMap){
+  const key = personaId+'|'+col.type+'|'+col.day;
+  if(apuntesMap.hasOwnProperty(key)) return apuntesMap[key];
+  return effectiveObligatorio(personaId, col);
+}
+async function setVal(personaId, col, val){
+  const { error } = await sb.from('apuntes').upsert(
+    { persona_id: personaId, semana_inicio: ACTIVE_WEEK.key, tipo: col.type, dia: col.day, obligatoria: effectiveObligatorio(personaId,col), valor: val },
+    { onConflict: 'persona_id,semana_inicio,tipo,dia' }
+  );
+  if(error) showToast('No se pudo guardar: '+error.message);
+  return !error;
+}
+
+/* ================= ALUMNO ================= */
+async function enterAlumno(persona, adminCompania){
+  const { data: seccion } = await sb.from('personas').select('*').eq('compania', persona.compania).eq('seccion', persona.seccion).order('apellidos');
+  CURRENT = { mode:'alumno', persona, seccionPeople: seccion || [persona], adminCompania: adminCompania || null };
+  EXTERNADOS = new Set((seccion||[persona]).filter(p=>p.externado).map(p=>p.id));
+  await fetchCortesEspeciales(persona.compania);
+  const { data: ciServ } = await sb.from('companias').select('servicios_visible_alumnos').eq('numero', persona.compania).single();
+  document.getElementById('alumno-mod-servicios-btn').classList.toggle('hidden', !(ciServ && ciServ.servicios_visible_alumnos));
+  showScreen('screen-alumno');
+  setActiveWeek(defaultWeekIndex());
+  await setModule('comidas');
+}
+function switchToAdmin(){ enterAdmin(CURRENT.adminCompania, CURRENT.persona); }
+async function onAlumnoWeekChange(v){ setActiveWeek(parseInt(v,10)); await (currentModule==='pernoctas' ? renderAlumnoPernoctas() : renderAlumno()); }
+
+async function renderAlumno(){
+  const { persona, seccionPeople } = CURRENT;
+  const code = ''+persona.compania+persona.seccion;
+  document.getElementById('alumno-subtitle').textContent = `${persona.compania}ª Compañía · ${persona.seccion}ª Sección (${code}) · ${seccionPeople.length} efectivos`;
+  document.getElementById('alumno-who').textContent = persona.nombre+' '+persona.apellidos;
+  document.getElementById('alumno-switch').innerHTML = CURRENT.adminCompania ? `<button class="small-btn" style="margin-right:8px;" onclick="switchToAdmin()">Modo admin</button>` : '';
+  const { data: companiaInfo } = await sb.from('companias').select('permitir_desbloqueo,hora_corte').eq('numero', persona.compania).single();
+  const unlocked = !!(companiaInfo && companiaInfo.permitir_desbloqueo);
+  const horaCorte = companiaInfo ? companiaInfo.hora_corte : '10:00:00';
+  await fetchSemanasOcultas(persona.compania);
+  if(SEMANAS_OCULTAS.has(ACTIVE_WEEK.key) || weekHasElapsed(ACTIVE_WEEK)) setActiveWeek(firstVisibleWeekIndex());
+
+  document.getElementById('alumno-week-select').innerHTML = weekSelectHtml('onAlumnoWeekChange', horaCorte, true);
+  document.getElementById('alumno-notice').innerHTML = noticeHtml(ACTIVE_WEEK, horaCorte) + (unlocked ? `<div class="notice" style="border-color:var(--brass);"><span>🌉 Tu compañía ha abierto el desbloqueo de obligatorias esta semana (puente)</span><strong>Puedes desmarcar desayuno y comida</strong></div>` : '');
+
+  const cols = COLS();
+  const personaIds = seccionPeople.map(p=>p.id);
+  const apuntesMap = await fetchApuntesMap(personaIds, ACTIVE_WEEK.key);
+  PERNOCTA_SABADO_AGM = await fetchPernoctaSabadoAgmSetSeccion(persona.compania, persona.seccion, ACTIVE_WEEK.key);
+  const open = weekIsOpen(ACTIVE_WEEK, horaCorte);
+  const tableScrollEl = document.getElementById('alumno-table-scroll');
+  tableScrollEl.classList.toggle('plazo-abierto', open);
+  tableScrollEl.classList.toggle('plazo-cerrado', !open);
+
+  const table = document.getElementById('alumno-table');
+  document.getElementById('alumno-view-toggle').innerHTML = `
+    <div class="view-toggle">
+      <button class="${!verSoloYoComidas?'active':''}" onclick="setVerSoloYoComidas(false)">👥 Toda la sección</button>
+      <button class="${verSoloYoComidas?'active':''}" onclick="setVerSoloYoComidas(true)">👤 Solo yo</button>
+    </div>`;
+  const filaPeople = verSoloYoComidas ? seccionPeople.filter(p=>p.id===persona.id) : seccionPeople;
+  let thead = '<thead><tr class="daynames"><th class="name-cell">Sección '+code+'</th>';
+  cols.forEach(c=> thead += `<th class="${isCurrentMealColumn(c)?'col-today':''}">${c.label}<span class="colhead-sub">${c.sub}</span></th>`);
+  thead += '</tr></thead>';
+
+  let tbody = '<tbody>';
+  filaPeople.forEach(p=>{
+    const isMe = p.id===persona.id;
+    tbody += `<tr class="${isMe?'me':''}"><td class="name-cell">${p.apellidos}, ${p.nombre}${isMe?' (tú)':''}</td>`;
+    cols.forEach(c=>{
+      const val = getVal(p.id, c, apuntesMap);
+      const locked = effectiveObligatorio(p.id, c) && !unlocked;
+      const tdClass = isCurrentMealColumn(c) ? 'col-today' : '';
+      if(locked){
+        tbody += `<td class="${tdClass}"><input type="checkbox" class="chk" checked disabled title="Obligatoria"></td>`;
+      } else if(isMe && open){
+        tbody += `<td class="${tdClass}"><input type="checkbox" class="chk editable" ${val?'checked':''} onchange="toggleMine('${c.type}',${c.day},${c.obligatorio},this.checked)"></td>`;
+      } else {
+        tbody += `<td class="${tdClass}"><span class="${val?'mark-yes':'mark-no'}">${val?'✓':'—'}</span></td>`;
+      }
+    });
+    tbody += '</tr>';
+  });
+  tbody += '</tbody>';
+
+  let tfoot = '<tfoot><tr><td class="name-cell">Total sección (marcados)</td>';
+  cols.forEach(c=>{
+    const n = seccionPeople.filter(p=>getVal(p.id,c,apuntesMap)).length;
+    tfoot += `<td class="mono ${isCurrentMealColumn(c)?'col-today':''} ${countCellClass(n, seccionPeople.length)}">${n}/${seccionPeople.length}</td>`;
+  });
+  tfoot += '</tr></tfoot>';
+  table.innerHTML = thead+tbody+tfoot;
+
+  const nextCenaCol = cols.find(c=>c.type==='cena');
+  const cenaSeccion = seccionPeople.filter(p=>getVal(p.id,nextCenaCol,apuntesMap)).length;
+  const nextComidaOpcional = cols.find(c=>c.type==='comida' && !c.obligatorio);
+  const comidaSeccion = seccionPeople.filter(p=>getVal(p.id,nextComidaOpcional,apuntesMap)).length;
+  document.getElementById('alumno-summary').innerHTML = `
+    <div class="stat-card"><div class="num">${comidaSeccion}/${seccionPeople.length}</div><div class="lbl">Comida ${DAY_NAMES[nextComidaOpcional.day]} — tu sección</div></div>
+    <div class="stat-card"><div class="num">${cenaSeccion}/${seccionPeople.length}</div><div class="lbl">Cena ${DAY_NAMES[nextCenaCol.day]} — tu sección</div></div>`;
+
+  const { data: confRow } = await sb.from('confirmaciones').select('confirmado,confirmado_en').eq('persona_id', persona.id).eq('semana_inicio', ACTIVE_WEEK.key).maybeSingle();
+  const confirmado = !!(confRow && confRow.confirmado);
+  const confTs = confRow && confRow.confirmado_en ? new Date(confRow.confirmado_en).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : null;
+  document.getElementById('alumno-confirm').innerHTML = `
+    <div class="confirm-box ${confirmado?'done':'pending'}">
+      <input type="checkbox" id="confirm-check" ${confirmado?'checked':''} ${open?'':'disabled'} onchange="onConfirmToggle(this.checked)">
+      <label for="confirm-check">${confirmado
+        ? `He revisado esta semana y son las comidas que quiero.<span class="ts">Confirmado el ${confTs}</span>`
+        : `⚠️ NO HAS CONFIRMADO TUS COMIDAS DE ESTA SEMANA<span class="ts">Revisa la tabla y marca aquí cuando esté correcta</span>`}</label>
+    </div>`;
+
+  const nowIso = new Date().toISOString();
+  const { data: avisos } = await sb.from('avisos').select('*')
+    .eq('compania', persona.compania)
+    .or(`seccion.is.null,seccion.eq.${persona.seccion}`)
+    .or(`persona_id.is.null,persona_id.eq.${persona.id}`)
+    .or(`expira_en.is.null,expira_en.gt.${nowIso}`)
+    .order('created_at',{ascending:false}).limit(15);
+  document.getElementById('alumno-avisos').innerHTML = (avisos||[]).map(a=>{
+    const ts = new Date(a.created_at).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const esIndividual = a.persona_id === persona.id;
+    let extra = '';
+    if(esIndividual){
+      if(a.respuesta){
+        extra = `<div style="margin-top:8px;font-size:.8rem;"><b>Tu respuesta:</b> ${a.respuesta}</div>
+          <button class="small-btn" style="margin-top:6px;" onclick="deleteAviso(${a.id})">He leído esto — borrar</button>`;
+      } else {
+        extra = `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">
+          <input type="text" id="aviso-reply-${a.id}" placeholder="Responder..." style="flex:1;min-width:140px;padding:7px 9px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.8rem;">
+          <button class="small-btn" onclick="replyAviso(${a.id})">Responder</button>
+          <button class="small-btn" onclick="deleteAviso(${a.id})">He leído esto — borrar</button>
+        </div>`;
+      }
+    }
+    return `<div class="aviso-card">
+      <div class="aviso-msg">📢 ${a.mensaje}</div>
+      <div class="aviso-meta">${ts} — ${a.creado_por}</div>
+      ${extra}
+    </div>`;
+  }).join('');
+}
+async function replyAviso(id){
+  const input = document.getElementById('aviso-reply-'+id);
+  const respuesta = input.value.trim();
+  if(!respuesta){ showToast('Escribe algo para responder.'); return; }
+  const { error } = await sb.from('avisos').update({ respuesta, respuesta_en: new Date().toISOString() }).eq('id', id);
+  if(error){ showToast('No se pudo enviar: '+error.message); return; }
+  showToast('Respuesta enviada.');
+  await renderAlumno();
+}
+async function deleteAviso(id){
+  const { error } = await sb.from('avisos').delete().eq('id', id);
+  if(error){ showToast('No se pudo borrar: '+error.message); return; }
+  await renderAlumno();
+}
+async function onConfirmToggle(checked){
+  await setConfirm(CURRENT.persona.id, checked);
+  await renderAlumno();
+}
+async function toggleMine(type, day, obligatorio, checked){
+  await setVal(CURRENT.persona.id, {type, day, obligatorio}, checked);
+  await setConfirm(CURRENT.persona.id, false); // cualquier cambio deshace la confirmación previa
+  await renderAlumno();
+}
+
+/* ================= ADMIN ================= */
+async function enterAdmin(compania, linkedPersona){
+  const { data: companiaInfo } = await sb.from('companias').select('*').eq('numero', compania).single();
+  CURRENT = { mode:'admin', compania, companiaInfo, linkedPersona: linkedPersona || null };
+  await fetchCortesEspeciales(compania);
+  showScreen('screen-admin');
+  setActiveWeek(defaultWeekIndex());
+  await setModule('comidas');
+}
+function switchToAlumno(){ enterAlumno(CURRENT.linkedPersona, CURRENT.compania); }
+async function onAdminWeekChange(v){ setActiveWeek(parseInt(v,10)); absenceSelIndex=null; await (currentModule==='pernoctas' ? renderAdminPernoctas() : renderAdmin()); }
+let absenceSelIndex = null;
+let expandedSections = new Set();
+let managedSections = new Set();
+let historyOpen = false;
+
+async function fetchCompanySections(compania){
+  const secciones = [];
+  for(let s=1;s<=SECTIONS_PER_COMPANY;s++){
+    const { data } = await sb.from('personas').select('*').eq('compania',compania).eq('seccion',s).order('apellidos');
+    secciones.push({ code: ''+compania+s, seccion: s, people: data || [] });
+  }
+  EXTERNADOS = new Set(secciones.flatMap(s=>s.people).filter(p=>p.externado).map(p=>p.id));
+  return secciones;
+}
+
+async function renderAdmin(){
+  const c = CURRENT.compania;
+  const { data: companiaInfo } = await sb.from('companias').select('*').eq('numero',c).single();
+  CURRENT.companiaInfo = companiaInfo;
+  document.getElementById('admin-subtitle').textContent = `${c}ª Compañía`;
+  document.getElementById('admin-who').textContent = CURRENT.linkedPersona ? (CURRENT.linkedPersona.nombre+' '+CURRENT.linkedPersona.apellidos) : companiaInfo.nombre_admin;
+  document.getElementById('admin-switch').innerHTML = CURRENT.linkedPersona ? `<button class="small-btn" style="margin-right:8px;" onclick="switchToAlumno()">Modo alumno</button>` : '';
+  await fetchSemanasOcultas(c);
+  document.getElementById('admin-week-select').innerHTML = weekSelectHtml('onAdminWeekChange', companiaInfo.hora_corte, false);
+  document.getElementById('admin-notice').innerHTML = noticeHtml(ACTIVE_WEEK, companiaInfo.hora_corte);
+
+  const secciones = await fetchCompanySections(c);
+  const allPeople = secciones.flatMap(s=>s.people);
+  const totalEfectivosReal = companiaInfo.total_efectivos;
+  const faltanRegistrarse = (totalEfectivosReal!=null) ? Math.max(0, totalEfectivosReal - allPeople.length) : null;
+  const externadosCount = allPeople.filter(p=>p.externado).length;
+  const intolerantesCount = allPeople.filter(p=>p.intolerancias && p.intolerancias.trim()).length;
+  const { data: codigoRow } = await sb.from('codigos_invitacion').select('codigo').eq('compania',c).single();
+
+  document.getElementById('admin-controls').innerHTML = `
+    <div class="admin-panel">
+      <div class="panel-row">
+        <div class="switch-label">Permitir a los alumnos de la ${c}ª desmarcar las comidas obligatorias
+          <span class="sub2">Para puentes y días sueltos</span>
+        </div>
+        <label class="switch"><input type="checkbox" ${companiaInfo.permitir_desbloqueo?'checked':''} onchange="toggleUnlock(this.checked)"><span class="track"></span><span class="thumb"></span></label>
+      </div>
+      <div class="panel-row">
+        <div class="switch-label">Hora de cierre del lunes
+          <span class="sub2">Hasta esta hora del lunes se puede apuntar la gente a la semana que empieza el viernes siguiente</span>
+        </div>
+        <input type="time" value="${fmtHora(companiaInfo.hora_corte)}" style="width:auto;padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;" onchange="updateCutoffHour(this.value)">
+      </div>
+      <div class="panel-row">
+        <div class="switch-label">Efectivos totales reales de la ${c}ª
+          <span class="sub2">El número real de gente en la compañía (no solo quien ya se ha registrado en la app), para saber cuántos faltan</span>
+        </div>
+        <input type="number" min="0" value="${companiaInfo.total_efectivos!=null?companiaInfo.total_efectivos:''}" placeholder="ej. 113" style="width:90px;padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;" onchange="updateTotalEfectivos(this.value)">
+      </div>
+      <div class="panel-row">
+        <div class="switch-label">Ocultar esta semana a los alumnos (Comidas y Pernoctas)
+          <span class="sub2">No borra nada — tú sigues viendo todas las semanas, pasadas incluidas, solo desaparece del desplegable de los alumnos. Las semanas ya pasadas se les ocultan solas, sin que tengas que hacer nada</span>
+        </div>
+        <label class="switch"><input type="checkbox" ${SEMANAS_OCULTAS.has(ACTIVE_WEEK.key)?'checked':''} onchange="toggleSemanaOculta(this.checked)"><span class="track"></span><span class="thumb"></span></label>
+      </div>
+      <div class="panel-row" style="flex-direction:column;align-items:stretch;">
+        <div class="switch-label">Corte especial para la semana seleccionada
+          <span class="sub2">${CORTES_ESPECIALES[ACTIVE_WEEK.key] ? 'Esta semana tiene un corte distinto del normal (afecta a Comidas y Pernoctas)' : 'Por si alguna semana necesita un día/hora de cierre distinto del resto (afecta a Comidas y Pernoctas)'}</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+          <input type="datetime-local" id="corte-especial-input" value="${toDatetimeLocalValue(cutoffFor(ACTIVE_WEEK, companiaInfo.hora_corte))}" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;">
+          <button class="small-btn" onclick="guardarCorteEspecial()">Guardar para esta semana</button>
+          ${CORTES_ESPECIALES[ACTIVE_WEEK.key] ? `<button class="small-btn danger" onclick="quitarCorteEspecial()">Quitar (volver al normal)</button>` : ''}
+        </div>
+      </div>
+      <div class="panel-row">
+        <div class="switch-label">Exportar la tabla de la ${c}ª Compañía (semana seleccionada)<span class="sub2">Una hoja por sección, lista para imprimir</span></div>
+        <button class="primary-btn" style="width:auto;padding:10px 16px;" onclick="exportCompanyExcel()">📄 Exportar a Excel</button>
+      </div>
+      <div class="panel-row">
+        <div class="switch-label">Código de invitación<span class="sub2">Hace falta para que un alumno se registre por primera vez</span></div>
+        <div style="display:flex;align-items:center;gap:8px;"><span class="mono" style="font-size:.9rem;">${codigoRow?codigoRow.codigo:'—'}</span><button class="small-btn" onclick="regenerateCode()">Regenerar</button></div>
+      </div>
+      <div class="panel-row">
+        <div class="switch-label">Confirmar a todos<span class="sub2">Por si se cerró el plazo y hay quien no llegó a confirmar sus comidas</span></div>
+        <button class="small-btn" onclick="confirmarTodosComidas()">✅ Confirmar todos</button>
+      </div>
+      <div class="panel-row" style="flex-direction:column;align-items:stretch;">
+        <div class="switch-label">Enviar aviso<span class="sub2">A toda la compañía, a una sección o a una persona concreta</span></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+          <select id="aviso-target-type" onchange="onAvisoTargetChange()" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;">
+            <option value="all">Toda la ${c}ª Compañía</option>
+            <option value="seccion">Una sección</option>
+            <option value="persona">Una persona</option>
+          </select>
+          <select id="aviso-seccion" class="hidden" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;">
+            ${secciones.map(s=>`<option value="${s.seccion}">Sección ${s.code}</option>`).join('')}
+          </select>
+          <select id="aviso-persona" class="hidden" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;">
+            ${allPeople.map(p=>`<option value="${p.id}">${p.apellidos}, ${p.nombre} (${''+c+p.seccion})</option>`).join('')}
+          </select>
+          <select id="aviso-duracion" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;">
+            <option value="1">Dura 1 día</option>
+            <option value="3">Dura 3 días</option>
+            <option value="7" selected>Dura 7 días</option>
+            <option value="14">Dura 14 días</option>
+            <option value="30">Dura 30 días</option>
+            <option value="0">No caduca</option>
+          </select>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:.8rem;color:var(--ink-soft);">
+          <input type="checkbox" id="aviso-anonimo" style="width:16px;height:16px;"> Enviar como anónimo (no se verá tu nombre, solo "Administración")
+        </label>
+        <textarea id="aviso-mensaje" placeholder="Escribe el aviso..." style="margin-top:8px;width:100%;min-height:60px;padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;"></textarea>
+        <button class="primary-btn" style="width:auto;margin-top:8px;align-self:flex-start;padding:10px 16px;" onclick="sendAviso()">📢 Enviar aviso</button>
+        <div style="margin-top:12px;"><button class="small-btn" onclick="toggleAvisosIndividuales()">${avisosIndividualesOpen?'Cerrar':'Ver'} avisos individuales y respuestas</button></div>
+        <div id="avisos-individuales-panel">${avisosIndividualesOpen ? await avisosIndividualesHtml(c) : ''}</div>
+      </div>
+    </div>`;
+
+  const cols = COLS();
+  const nextCenaCol = cols.find(col=>col.type==='cena');
+  const personaIds = allPeople.map(p=>p.id);
+  const apuntesMap = await fetchApuntesMap(personaIds, ACTIVE_WEEK.key);
+  const confirmMap = await fetchConfirmMap(personaIds, ACTIVE_WEEK.key);
+  PERNOCTA_SABADO_AGM = await fetchPernoctaSabadoAgmSetCompania(c, ACTIVE_WEEK.key);
+  const cenaTotal = allPeople.filter(p=>getVal(p.id,nextCenaCol,apuntesMap)).length;
+  const confirmadosTotal = allPeople.filter(p=>confirmMap[p.id]).length;
+  const registradosCount = allPeople.filter(p=>p.registrado).length;
+  const noRegistradosCount = allPeople.filter(p=>!p.registrado).length;
+
+  document.getElementById('admin-summary').innerHTML = `
+    <div class="stat-card"><div class="num">${registradosCount}</div><div class="lbl">Registrados en la app</div></div>
+    <div class="stat-card"><div class="num">${noRegistradosCount}</div><div class="lbl">Faltan por registrarse${totalEfectivosReal!=null?` (de ${totalEfectivosReal})`:''}</div></div>
+    <div class="stat-card"><div class="num">${cenaTotal}</div><div class="lbl">Cena ${DAY_NAMES[nextCenaCol.day]} marcadas</div></div>
+    <div class="stat-card"><div class="num">${confirmadosTotal}/${allPeople.length}</div><div class="lbl">Han revisado y confirmado esta semana</div></div>`;
+
+  document.getElementById('admin-companies').innerHTML = await companyBlockHtml(c, secciones, apuntesMap, confirmMap) + faltanRegistrarseHtml(secciones);
+
+  document.getElementById('admin-grand').innerHTML = `
+    <div><div class="num mono">${registradosCount}</div><div class="lbl">Registrados en la ${c}ª</div></div>
+    <div><div class="num mono">${externadosCount}</div><div class="lbl">Externados</div></div>
+    <div><div class="num mono">${intolerantesCount}</div><div class="lbl">Con intolerancias</div></div>`;
+}
+
+async function updateCutoffHour(value){
+  const { error } = await sb.from('companias').update({hora_corte: value+':00'}).eq('numero', CURRENT.compania);
+  if(error){ showToast('No se pudo cambiar la hora: '+error.message); return; }
+  showToast('Hora de cierre actualizada a las '+value+'.');
+  await renderAdmin();
+}
+async function updateTotalEfectivos(value){
+  const n = value.trim()==='' ? null : parseInt(value,10);
+  const { error } = await sb.from('companias').update({total_efectivos: n}).eq('numero', CURRENT.compania);
+  if(error){ showToast('No se pudo guardar: '+error.message); return; }
+  showToast(n!=null ? `Efectivos totales fijados en ${n}.` : 'Efectivos totales borrados.');
+  await renderAdmin();
+}
+async function toggleSemanaOculta(checked){
+  if(checked){
+    const { error } = await sb.from('semanas_ocultas').insert({ compania: CURRENT.compania, semana_inicio: ACTIVE_WEEK.key });
+    if(error){ showToast('No se pudo ocultar: '+error.message); return; }
+    showToast('Semana ocultada a los alumnos.');
+  } else {
+    const { error } = await sb.from('semanas_ocultas').delete().eq('compania', CURRENT.compania).eq('semana_inicio', ACTIVE_WEEK.key);
+    if(error){ showToast('No se pudo mostrar: '+error.message); return; }
+    showToast('Semana visible de nuevo para los alumnos.');
+  }
+  await (currentModule==='pernoctas' ? renderAdminPernoctas() : renderAdmin());
+}
+async function guardarCorteEspecial(){
+  const value = document.getElementById('corte-especial-input').value;
+  if(!value){ showToast('Elige fecha y hora.'); return; }
+  const iso = new Date(value).toISOString();
+  const { error } = await sb.from('cortes_especiales').upsert(
+    { compania: CURRENT.compania, semana_inicio: ACTIVE_WEEK.key, corte_en: iso },
+    { onConflict: 'compania,semana_inicio' }
+  );
+  if(error){ showToast('No se pudo guardar: '+error.message); return; }
+  await fetchCortesEspeciales(CURRENT.compania);
+  showToast('Corte especial guardado para esta semana.');
+  await (currentModule==='pernoctas' ? renderAdminPernoctas() : renderAdmin());
+}
+async function quitarCorteEspecial(){
+  const { error } = await sb.from('cortes_especiales').delete().eq('compania', CURRENT.compania).eq('semana_inicio', ACTIVE_WEEK.key);
+  if(error){ showToast('No se pudo quitar: '+error.message); return; }
+  await fetchCortesEspeciales(CURRENT.compania);
+  showToast('Corte especial eliminado — esta semana vuelve al horario normal.');
+  await (currentModule==='pernoctas' ? renderAdminPernoctas() : renderAdmin());
+}
+async function toggleUnlock(checked){
+  const { error } = await sb.from('companias').update({permitir_desbloqueo: checked}).eq('numero', CURRENT.compania);
+  if(error) showToast('No se pudo cambiar: '+error.message);
+  await renderAdmin();
+}
+async function regenerateCode(){
+  const rand = Math.random().toString(36).slice(2,8).toUpperCase();
+  const nuevo = `CASA${CURRENT.compania}-${rand}`;
+  const { error } = await sb.from('codigos_invitacion').update({codigo:nuevo}).eq('compania', CURRENT.compania);
+  if(error){ showToast('No se pudo regenerar: '+error.message); return; }
+  showToast('Nuevo código generado. Compártelo con tus alumnos.');
+  await renderAdmin();
+}
+async function confirmarTodosComidas(){
+  const c = CURRENT.compania;
+  const secciones = await fetchCompanySections(c);
+  const allIds = secciones.flatMap(s=>s.people).map(p=>p.id);
+  if(allIds.length===0) return;
+  const nowIso = new Date().toISOString();
+  const rows = allIds.map(id=>({persona_id:id, semana_inicio:ACTIVE_WEEK.key, confirmado:true, confirmado_en:nowIso}));
+  const { error } = await sb.from('confirmaciones').upsert(rows, {onConflict:'persona_id,semana_inicio'});
+  if(error){ showToast('No se pudo confirmar a todos: '+error.message); return; }
+  showToast(`Confirmados ${rows.length} alumno(s) de comidas.`);
+  await renderAdmin();
+}
+async function confirmarTodosPernocta(){
+  const c = CURRENT.compania;
+  const secciones = await fetchCompanySections(c);
+  const allIds = secciones.flatMap(s=>s.people).map(p=>p.id);
+  if(allIds.length===0) return;
+  const nowIso = new Date().toISOString();
+  const rows = allIds.map(id=>({persona_id:id, semana_inicio:ACTIVE_WEEK.key, confirmado:true, confirmado_en:nowIso}));
+  const { error } = await sb.from('confirmaciones_pernocta').upsert(rows, {onConflict:'persona_id,semana_inicio'});
+  if(error){ showToast('No se pudo confirmar a todos: '+error.message); return; }
+  showToast(`Confirmados ${rows.length} alumno(s) de pernoctas.`);
+  await renderAdminPernoctas();
+}
+let avisosIndividualesOpen = false;
+function toggleAvisosIndividuales(){ avisosIndividualesOpen = !avisosIndividualesOpen; renderAdmin(); }
+async function avisosIndividualesHtml(c){
+  const { data, error } = await sb.from('avisos').select('*, personas(nombre,apellidos)')
+    .eq('compania', c).not('persona_id','is',null)
+    .order('created_at',{ascending:false}).limit(30);
+  if(error || !data || data.length===0) return `<div style="font-size:.8rem;color:var(--ink-soft);margin-top:8px;">Sin avisos individuales todavía.</div>`;
+  return '<div style="margin-top:8px;">' + data.map(a=>{
+    const ts = new Date(a.created_at).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const nombre = a.personas ? `${a.personas.apellidos}, ${a.personas.nombre}` : '(borrado)';
+    return `<div class="history-row"><span class="ts">${ts}</span> — <b>${nombre}</b>: ${a.mensaje}${a.respuesta ? `<br><span style="color:var(--olive);">↳ Respuesta: ${a.respuesta}</span>` : `<br><span class="ts">Sin respuesta / sin leer todavía</span>`}</div>`;
+  }).join('') + '</div>';
+}
+function onAvisoTargetChange(){
+  const t = document.getElementById('aviso-target-type').value;
+  document.getElementById('aviso-seccion').classList.toggle('hidden', t!=='seccion');
+  document.getElementById('aviso-persona').classList.toggle('hidden', t!=='persona');
+}
+async function sendAviso(){
+  const t = document.getElementById('aviso-target-type').value;
+  const mensaje = document.getElementById('aviso-mensaje').value.trim();
+  if(!mensaje){ showToast('Escribe el mensaje del aviso.'); return; }
+  const dias = parseInt(document.getElementById('aviso-duracion').value, 10);
+  const expiraEn = dias>0 ? new Date(Date.now()+dias*86400000).toISOString() : null;
+  const esAnonimo = document.getElementById('aviso-anonimo').checked;
+  const nombreAdmin = CURRENT.linkedPersona ? (CURRENT.linkedPersona.nombre+' '+CURRENT.linkedPersona.apellidos) : CURRENT.companiaInfo.nombre_admin;
+  const payload = { compania: CURRENT.compania, seccion: null, persona_id: null, mensaje, expira_en: expiraEn,
+    creado_por: esAnonimo ? 'Administración' : nombreAdmin };
+  let destino = `toda la ${CURRENT.compania}ª Compañía`;
+  if(t==='seccion'){
+    const s = document.getElementById('aviso-seccion').value;
+    payload.seccion = parseInt(s,10);
+    destino = `la sección ${CURRENT.compania}${s}`;
+  } else if(t==='persona'){
+    const pid = document.getElementById('aviso-persona').value;
+    payload.persona_id = pid;
+    const sel = document.getElementById('aviso-persona');
+    destino = sel.options[sel.selectedIndex].text;
+  }
+  const { error } = await sb.from('avisos').insert(payload);
+  if(error){ showToast('No se pudo enviar: '+error.message); return; }
+  document.getElementById('aviso-mensaje').value = '';
+  showToast('Aviso enviado a '+destino+'.');
+}
+async function adminToggle(personaId, type, day, obligatorio, checked){
+  await setVal(personaId, {type, day, obligatorio}, checked);
+  await renderAdmin();
+}
+
+/* ---- Alta / baja / reinicio de acceso ---- */
+async function resetAccess(personaId, nombreCompleto){
+  if(!confirm(`¿Reiniciar el acceso de ${nombreCompleto}? Tendrá que volver a registrarse con una contraseña nueva.`)) return;
+  const { error } = await sb.from('personas').update({registrado:false, auth_user_id:null}).eq('id', personaId);
+  if(error){ showToast('No se pudo reiniciar: '+error.message); return; }
+  await renderAdmin();
+}
+async function removeStudent(personaId, nombreCompleto){
+  if(!confirm(`¿Dar de baja a ${nombreCompleto}?`)) return;
+  const { error } = await sb.from('personas').delete().eq('id', personaId);
+  if(error){ showToast('No se pudo dar de baja: '+error.message); return; }
+  await renderAdmin();
+}
+async function addStudent(code, compania, seccion){
+  const nInput = document.getElementById('add-nombre-'+code);
+  const aInput = document.getElementById('add-apellidos-'+code);
+  const nombre = nInput.value.trim(), apellidos = aInput.value.trim();
+  if(!nombre || !apellidos){ showToast('Pon nombre y apellidos.'); return; }
+  const { error } = await sb.from('personas').insert({compania, seccion, nombre, apellidos});
+  if(error){ showToast('No se pudo añadir: '+error.message); return; }
+  nInput.value=''; aInput.value='';
+  await renderAdmin();
+}
+function sectionManagePanel(sec){
+  let rows = sec.people.map(p=>`
+    <div class="manage-row">
+      <div>${p.apellidos}, ${p.nombre} ${p.registrado?`<span class="badge ok">Registrado</span>`:`<span class="badge">Sin registrar</span>`}</div>
+      <input type="text" class="intol" value="${(p.intolerancias||'').replace(/"/g,'&quot;')}" placeholder="Intolerancias" onchange="updateIntolerancias('${p.id}', this.value)">
+      <label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:var(--ink-soft);white-space:nowrap;">
+        <input type="checkbox" ${p.externado?'checked':''} onchange="updateExternado('${p.id}', this.checked)"> Externado (sáb. no obligatorio)
+      </label>
+      <select onchange="moverSeccion('${p.id}', this.value)" style="padding:5px 8px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.72rem;">
+        <option value="">Mover de sección…</option>
+        ${[1,2,3,4].filter(s=>s!==sec.seccion).map(s=>`<option value="${s}">A la sección ${CURRENT.compania}${s}</option>`).join('')}
+      </select>
+      <div class="btns">
+        ${p.registrado ? `<button class="small-btn" onclick="resetAccess('${p.id}','${(p.nombre+' '+p.apellidos).replace(/'/g,"")}')">Reiniciar acceso</button>` : ''}
+        <button class="small-btn danger" onclick="removeStudent('${p.id}','${(p.nombre+' '+p.apellidos).replace(/'/g,"")}')">Dar de baja</button>
+      </div>
+    </div>`).join('');
+  return `<div class="admin-edit-note">Gestión de la sección ${sec.code}: alta, baja, reinicio de acceso, intolerancias, externados y sección</div>
+    ${rows || '<div style="font-size:.8rem;color:var(--ink-soft);">Sin alumnos en esta sección.</div>'}
+    <div class="add-student-row">
+      <input type="text" id="add-nombre-${sec.code}" placeholder="Nombre">
+      <input type="text" id="add-apellidos-${sec.code}" placeholder="Apellidos">
+      <button class="small-btn" onclick="addStudent('${sec.code}',${CURRENT.compania},${sec.seccion})">+ Añadir alumno</button>
+    </div>`;
+}
+async function updateIntolerancias(personaId, value){
+  const { error } = await sb.from('personas').update({ intolerancias: value.trim() || null }).eq('id', personaId);
+  if(error){ showToast('No se pudo guardar: '+error.message); return; }
+  showToast('Intolerancia guardada.');
+}
+async function updateExternado(personaId, checked){
+  const { error } = await sb.from('personas').update({ externado: checked }).eq('id', personaId);
+  if(error){ showToast('No se pudo guardar: '+error.message); return; }
+  showToast(checked ? 'Marcado como externado.' : 'Ya no es externado.');
+  await renderAdmin();
+}
+async function moverSeccion(personaId, nuevaSeccion){
+  if(!nuevaSeccion) return;
+  const { error } = await sb.from('personas').update({ seccion: parseInt(nuevaSeccion,10) }).eq('id', personaId);
+  if(error){ showToast('No se pudo mover: '+error.message); return; }
+  showToast('Movido a la sección '+CURRENT.compania+nuevaSeccion+'.');
+  await renderAdmin();
+}
+
+/* ---- Ausencias por comida ---- */
+function absenceRows(sec, apuntesMap){
+  let rows = '';
+  COLS().forEach(c=>{
+    const absentees = sec.people.filter(p=>!getVal(p.id,c,apuntesMap));
+    if(absentees.length) rows += `<div style="font-size:.78rem;margin-bottom:5px;"><b>${c.label} ${c.sub}</b> — no asisten (${absentees.length}): ${absentees.map(p=>p.apellidos+', '+p.nombre).join(' · ')}</div>`;
+  });
+  return rows || '<div style="font-size:.78rem;color:var(--ink-soft);">Nadie falta a ninguna comida esta semana.</div>';
+}
+function defaultAbsenceIndex(){
+  const now = new Date();
+  const idx = COLS().findIndex(c=>{
+    const d = new Date(ACTIVE_WEEK.days[c.day]);
+    d.setHours(c.type==='desayuno'?8:(c.type==='comida'?14:21),0,0,0);
+    return d >= now;
+  });
+  return idx===-1 ? 0 : idx;
+}
+function onAbsenceMealChange(v){ absenceSelIndex = parseInt(v,10); renderAdmin(); }
+let absencesOpen = false;
+function toggleAbsences(){ absencesOpen = !absencesOpen; renderAdmin(); }
+function companyAbsencesSummary(secciones, apuntesMap){
+  if(absenceSelIndex===null) absenceSelIndex = defaultAbsenceIndex();
+  const header = `<div style="margin:18px 0 10px;"><button class="small-btn" onclick="toggleAbsences()">${absencesOpen?'Cerrar':'Ver'} quiénes no comen / no cenan</button></div>`;
+  if(!absencesOpen) return header;
+  const cols = COLS();
+  const col = cols[absenceSelIndex];
+  const options = cols.map((cc,i)=>`<option value="${i}" ${i===absenceSelIndex?'selected':''}>${DAY_NAMES[cc.day]} ${fmt(ACTIVE_WEEK.days[cc.day])} — ${cc.label}</option>`).join('');
+  let blocks = '';
+  secciones.forEach(sec=>{
+    const absentees = sec.people.filter(p=>!getVal(p.id,col,apuntesMap));
+    blocks += `<div style="border:1px solid var(--line);padding:10px 12px;margin-bottom:8px;">
+      <div style="font-weight:700;font-size:.8rem;margin-bottom:4px;">Sección ${sec.code} <span style="color:var(--ink-soft);font-weight:400;">(${absentees.length} no asisten)</span></div>
+      <div style="font-size:.78rem;color:${absentees.length?'var(--danger)':'var(--ink-soft)'};">${absentees.length ? absentees.map(p=>p.apellidos+', '+p.nombre).join(' · ') : 'Nadie falta'}</div>
+    </div>`;
+  });
+  return `${header}<h3 class="section-title" style="margin-top:0;">Quiénes no comen / no cenan</h3>
+    <div class="field" style="max-width:360px;"><label>Comida</label><select onchange="onAbsenceMealChange(this.value)">${options}</select></div>
+    ${blocks}`;
+}
+function companyConfirmSummary(secciones, confirmMap){
+  let blocks = '';
+  secciones.forEach(sec=>{
+    const confirmados = sec.people.filter(p=>confirmMap[p.id]).length;
+    const pendientes = sec.people.filter(p=>!confirmMap[p.id]);
+    blocks += `<div style="border:1px solid var(--line);padding:10px 12px;margin-bottom:8px;">
+      <div style="font-weight:700;font-size:.8rem;margin-bottom:4px;">Sección ${sec.code} <span style="color:var(--ink-soft);font-weight:400;">(${confirmados}/${sec.people.length} confirmado)</span></div>
+      ${pendientes.length ? `<div style="font-size:.78rem;color:var(--danger);">Sin confirmar: ${pendientes.map(p=>p.apellidos+', '+p.nombre).join(' · ')}</div>` : `<div style="font-size:.78rem;color:var(--olive);">Todos han confirmado</div>`}
+    </div>`;
+  });
+  return `<h3 class="section-title">Quién ha revisado y confirmado sus comidas esta semana</h3>${blocks}`;
+}
+
+/* ---- Historial ---- */
+async function toggleHistory(){ historyOpen = !historyOpen; await renderAdmin(); }
+async function historyPanel(){
+  const { data, error } = await sb.from('historial')
+    .select('*, personas(nombre,apellidos,compania,seccion)')
+    .order('created_at',{ascending:false}).limit(40);
+  if(error || !data || data.length===0) return `<div style="font-size:.8rem;color:var(--ink-soft);margin-top:10px;">Sin cambios registrados todavía.</div>`;
+  return '<div style="margin-top:10px;">' + data.map(e=>{
+    const ts = new Date(e.created_at).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const nombre = e.personas ? `${e.personas.apellidos}, ${e.personas.nombre}` : '(alumno eliminado)';
+    const seccionCode = e.personas ? ''+e.personas.compania+e.personas.seccion : '';
+    return `<div class="history-row"><span class="ts">${ts}</span> — ${seccionCode} · <b>${nombre}</b> · ${e.tipo} ${DAY_NAMES[e.dia]}: ${e.valor_anterior===null?'—':(e.valor_anterior?'Sí':'No')} → ${e.valor_nuevo?'Sí':'No'} <span class="ts">(${e.actor})</span></div>`;
+  }).join('') + '</div>';
+}
+
+/* ---- Excel ---- */
+const XLSX_BORDER_COLOR = 'D6D1C0';
+const XLSX_THIN_BORDER = {
+  top:{style:'thin',color:{rgb:XLSX_BORDER_COLOR}}, bottom:{style:'thin',color:{rgb:XLSX_BORDER_COLOR}},
+  left:{style:'thin',color:{rgb:XLSX_BORDER_COLOR}}, right:{style:'thin',color:{rgb:XLSX_BORDER_COLOR}}
+};
+function xlsxStyleSheet(ws, numDataRows, numCols, obligFn){
+  const headerStyle = { font:{bold:true, color:{rgb:'FFFFFF'}, sz:11}, fill:{fgColor:{rgb:'4E5C3C'}}, alignment:{horizontal:'center',vertical:'center',wrapText:true}, border:XLSX_THIN_BORDER };
+  const nameStyle = { font:{bold:true}, alignment:{horizontal:'left',vertical:'center'}, border:XLSX_THIN_BORDER };
+  const cellStyle = { alignment:{horizontal:'center',vertical:'center'}, border:XLSX_THIN_BORDER };
+  const obligCellStyle = { alignment:{horizontal:'center',vertical:'center'}, border:XLSX_THIN_BORDER, fill:{fgColor:{rgb:'D9D6CC'}} };
+  const totalNameStyle = { font:{bold:true}, fill:{fgColor:{rgb:'EAE7DA'}}, alignment:{horizontal:'left',vertical:'center'}, border:XLSX_THIN_BORDER };
+  const totalCellStyle = { font:{bold:true}, fill:{fgColor:{rgb:'EAE7DA'}}, alignment:{horizontal:'center',vertical:'center'}, border:XLSX_THIN_BORDER };
+  const lastRow = numDataRows + 1; // fila 0 = cabecera, última = TOTAL
+  for(let r=0; r<=lastRow; r++){
+    for(let cIdx=0; cIdx<numCols; cIdx++){
+      const addr = XLSX.utils.encode_cell({r, c:cIdx});
+      if(!ws[addr]) continue;
+      if(r===0) ws[addr].s = headerStyle;
+      else if(r===lastRow) ws[addr].s = (cIdx===0 ? totalNameStyle : totalCellStyle);
+      else if(cIdx===0) ws[addr].s = nameStyle;
+      else ws[addr].s = (obligFn && obligFn(r-1, cIdx-1)) ? obligCellStyle : cellStyle;
+    }
+  }
+  ws['!rows'] = [{hpx:34}];
+  ws['!freeze'] = { xSplit:1, ySplit:1 };
+}
+function xlsxHeaderOnly(ws, numCols){
+  const headerStyle = { font:{bold:true, color:{rgb:'FFFFFF'}, sz:11}, fill:{fgColor:{rgb:'4E5C3C'}}, alignment:{horizontal:'center',vertical:'center',wrapText:true}, border:XLSX_THIN_BORDER };
+  const cellStyle = { alignment:{horizontal:'left',vertical:'center'}, border:XLSX_THIN_BORDER };
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  for(let r=0; r<=range.e.r; r++){
+    for(let cIdx=0; cIdx<numCols; cIdx++){
+      const addr = XLSX.utils.encode_cell({r, c:cIdx});
+      if(!ws[addr]) continue;
+      ws[addr].s = r===0 ? headerStyle : cellStyle;
+    }
+  }
+  ws['!rows'] = [{hpx:34}];
+  ws['!freeze'] = { xSplit:0, ySplit:1 };
+}
+async function exportCompanyExcel(){
+  const c = CURRENT.compania;
+  const cols = COLS();
+  const secciones = await fetchCompanySections(c);
+  const allIds = secciones.flatMap(s=>s.people.map(p=>p.id));
+  const apuntesMap = await fetchApuntesMap(allIds, ACTIVE_WEEK.key);
+  PERNOCTA_SABADO_AGM = await fetchPernoctaSabadoAgmSetCompania(c, ACTIVE_WEEK.key);
+  const wb = XLSX.utils.book_new();
+
+  // Hoja de totales por sección
+  const totHeader = ['Sección', ...cols.map(col=>`${col.label}\n${col.sub}`)];
+  const totRows = [totHeader];
+  secciones.forEach(sec=>{
+    const row = [`${sec.code} (${sec.people.length} efvos.)`];
+    cols.forEach(col=>{ const n = sec.people.filter(p=>getVal(p.id,col,apuntesMap)).length; row.push(n+'/'+sec.people.length); });
+    totRows.push(row);
+  });
+  const grandRow = [`TOTAL ${c}ª COMPAÑÍA`];
+  cols.forEach(col=>{ const n = allIds.filter(id=>getVal(id,col,apuntesMap)).length; grandRow.push(n+'/'+allIds.length); });
+  totRows.push(grandRow);
+  const wsTot = XLSX.utils.aoa_to_sheet(totRows);
+  wsTot['!cols'] = [{wch:22}, ...cols.map(()=>({wch:13}))];
+  xlsxStyleSheet(wsTot, secciones.length, totHeader.length);
+  XLSX.utils.book_append_sheet(wb, wsTot, 'Totales');
+
+  // Hoja de intolerancias
+  const intolHeader = ['Sección', 'Nombre y apellidos', 'Intolerancias'];
+  const intolRows = [intolHeader];
+  secciones.forEach(sec=>{
+    sec.people.filter(p=>p.intolerancias && p.intolerancias.trim()).forEach(p=>{
+      intolRows.push([sec.code, p.apellidos+', '+p.nombre, p.intolerancias.trim()]);
+    });
+  });
+  if(intolRows.length===1) intolRows.push(['—','Nadie tiene intolerancias registradas','']);
+  const wsIntol = XLSX.utils.aoa_to_sheet(intolRows);
+  wsIntol['!cols'] = [{wch:12},{wch:26},{wch:40}];
+  xlsxHeaderOnly(wsIntol, intolHeader.length);
+  XLSX.utils.book_append_sheet(wb, wsIntol, 'Intolerancias');
+
+  // Una hoja por sección con el detalle (X = come, en blanco = no come)
+  secciones.forEach(sec=>{
+    const header = ['Nombre y apellidos', ...cols.map(col=>`${col.label}\n${col.sub}`)];
+    const rows = [header];
+    sec.people.forEach(p=>{
+      const row = [p.apellidos+', '+p.nombre];
+      cols.forEach(col=> row.push(getVal(p.id,col,apuntesMap) ? 'X' : ''));
+      rows.push(row);
+    });
+    const totalRow = ['TOTAL'];
+    cols.forEach(col=>{ const n = sec.people.filter(p=>getVal(p.id,col,apuntesMap)).length; totalRow.push(n+'/'+sec.people.length); });
+    rows.push(totalRow);
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols'] = [{wch:26}, ...cols.map(()=>({wch:13}))];
+    xlsxStyleSheet(ws, sec.people.length, header.length, (rIdx, cIdx)=> effectiveObligatorio(sec.people[rIdx].id, cols[cIdx]));
+    XLSX.utils.book_append_sheet(wb, ws, 'Sección '+sec.code);
+  });
+  const filename = `PortalAGM_Comidas_${c}Cia_${fmt(ACTIVE_WEEK.days[0]).replace('/','-')}_a_${fmt(ACTIVE_WEEK.days[6]).replace('/','-')}.xlsx`;
+  XLSX.writeFile(wb, filename);
+}
+
+/* ---- Bloque de compañía ---- */
+function toggleSectionDetail(code){ if(expandedSections.has(code)) expandedSections.delete(code); else expandedSections.add(code); renderAdmin(); }
+function toggleManage(code){ if(managedSections.has(code)) managedSections.delete(code); else managedSections.add(code); renderAdmin(); }
+
+function adminDetailTable(sec, apuntesMap){
+  const cols = COLS();
+  let thead = '<thead><tr class="daynames"><th class="name-cell">'+sec.code+'</th>';
+  cols.forEach(col=> thead += `<th>${col.label}<span class="colhead-sub">${col.sub}</span></th>`);
+  thead += '</tr></thead>';
+  let tbody = '<tbody>';
+  sec.people.forEach(p=>{
+    tbody += `<tr><td class="name-cell">${p.apellidos}, ${p.nombre}</td>`;
+    cols.forEach(c=>{
+      const val = getVal(p.id,c,apuntesMap);
+      tbody += `<td><input type="checkbox" class="chk editable" ${val?'checked':''} onchange="adminToggle('${p.id}','${c.type}',${c.day},${c.obligatorio},this.checked)"></td>`;
+    });
+    tbody += '</tr>';
+  });
+  tbody += '</tbody>';
+  let tfoot = '<tfoot><tr><td class="name-cell">Total</td>';
+  cols.forEach(c=>{ const n = sec.people.filter(p=>getVal(p.id,c,apuntesMap)).length; tfoot += `<td class="mono ${countCellClass(n, sec.people.length)}">${n}/${sec.people.length}</td>`; });
+  tfoot += '</tr></tfoot>';
+  return `<div class="admin-edit-note">Modo administración: puedes marcar o desmarcar cualquier casilla, incluidas las obligatorias.</div>
+    <div class="table-scroll"><table class="roster admin-edit">${thead}${tbody}${tfoot}</table></div>`;
+}
+let viewedSections = new Set();
+function toggleSectionView(code){ if(viewedSections.has(code)) viewedSections.delete(code); else viewedSections.add(code); renderAdmin(); }
+function comidaViewOnlyTable(sec, apuntesMap){
+  const cols = COLS();
+  let thead = '<thead><tr class="daynames"><th class="name-cell">'+sec.code+'</th>';
+  cols.forEach(col=> thead += `<th>${col.label}<span class="colhead-sub">${col.sub}</span></th>`);
+  thead += '</tr></thead>';
+  let tbody = '<tbody>';
+  sec.people.forEach(p=>{
+    tbody += `<tr><td class="name-cell">${p.apellidos}, ${p.nombre}</td>`;
+    cols.forEach(c=>{
+      const val = getVal(p.id,c,apuntesMap);
+      tbody += `<td><span class="${val?'mark-yes':'mark-no'}">${val?'✓':'—'}</span></td>`;
+    });
+    tbody += '</tr>';
+  });
+  tbody += '</tbody>';
+  let tfoot = '<tfoot><tr><td class="name-cell">Total</td>';
+  cols.forEach(c=>{ const n = sec.people.filter(p=>getVal(p.id,c,apuntesMap)).length; tfoot += `<td class="mono ${countCellClass(n, sec.people.length)}">${n}/${sec.people.length}</td>`; });
+  tfoot += '</tr></tfoot>';
+  return `<div class="admin-edit-note">Solo consulta — para cambiar algo usa "Editar ${sec.code}"</div>
+    <div class="table-scroll"><table class="roster">${thead}${tbody}${tfoot}</table></div>`;
+}
+
+let faltanRegistrarseOpen = false;
+function toggleFaltanRegistrarse(){ faltanRegistrarseOpen = !faltanRegistrarseOpen; renderAdmin(); }
+function faltanRegistrarseHtml(secciones){
+  const totalFaltan = secciones.reduce((a,sec)=>a+sec.people.filter(p=>!p.registrado).length, 0);
+  const header = `<div style="margin:16px 0 10px;"><button class="small-btn" onclick="toggleFaltanRegistrarse()">${faltanRegistrarseOpen?'Cerrar':'Ver'} quién falta por registrarse (${totalFaltan})</button></div>`;
+  if(!faltanRegistrarseOpen) return header;
+  const bloques = secciones.map(sec=>{
+    const faltan = sec.people.filter(p=>!p.registrado);
+    return `<div style="border:1px solid var(--line);padding:10px 12px;margin-bottom:8px;">
+      <div style="font-weight:700;font-size:.8rem;margin-bottom:4px;">Sección ${sec.code} <span style="color:var(--ink-soft);font-weight:400;">(${faltan.length} sin registrar)</span></div>
+      <div style="font-size:.78rem;color:${faltan.length?'var(--danger)':'var(--ink-soft)'};">${faltan.length ? faltan.map(p=>p.apellidos+', '+p.nombre).join(' · ') : 'Todos registrados'}</div>
+    </div>`;
+  }).join('');
+  return `${header}<h3 class="section-title" style="margin-top:0;">Quién falta por registrarse</h3>${bloques}`;
+}
+async function companyBlockHtml(c, secciones, apuntesMap, confirmMap){
+  const cols = COLS();
+  let rows = '';
+  secciones.forEach(sec=>{
+    rows += `<tr><td class="name-cell"><button class="small-btn" style="border:none;background:none;padding:0;font-weight:600;color:var(--ink);text-decoration:underline;cursor:pointer;" onclick="toggleSectionView('${sec.code}')">${sec.code}</button> <span style="color:var(--ink-soft)">(${sec.people.length})</span></td>`;
+    cols.forEach(col=>{ const n = sec.people.filter(p=>getVal(p.id,col,apuntesMap)).length; rows += `<td class="mono ${countCellClass(n, sec.people.length)}">${n}/${sec.people.length}</td>`; });
+    rows += '</tr>';
+  });
+  let thead = '<thead><tr class="daynames"><th class="name-cell">Sección</th>';
+  cols.forEach(col=> thead += `<th>${col.label}<span class="colhead-sub">${col.sub}</span></th>`);
+  thead += '</tr></thead>';
+
+  let sectionButtons = '';
+  secciones.forEach(sec=>{
+    sectionButtons += `<button class="big-btn" onclick="toggleSectionDetail('${sec.code}')">${expandedSections.has(sec.code)?'Cerrar':'✎ Editar'} ${sec.code}</button>`;
+    sectionButtons += `<button class="big-btn" onclick="toggleManage('${sec.code}')">${managedSections.has(sec.code)?'Cerrar gestión':'⚙ Gestionar'} ${sec.code}</button>`;
+  });
+
+  let details = '';
+  secciones.forEach(sec=>{
+    if(viewedSections.has(sec.code)) details += comidaViewOnlyTable(sec, apuntesMap);
+    if(expandedSections.has(sec.code)) details += adminDetailTable(sec, apuntesMap);
+    if(managedSections.has(sec.code)) details += sectionManagePanel(sec);
+  });
+
+  const historyHtml = historyOpen ? await historyPanel() : '';
+
+  return `<div class="company-block">
+    <div class="company-head"><h4>${c}ª Compañía</h4><span class="chev">${SECTIONS_PER_COMPANY} secciones</span></div>
+    <div class="company-body">
+      <div class="section-btn-row">${sectionButtons}</div>
+      <p class="small-note" style="margin-top:0;">Toca el número de sección (ej. "111") para verla sin entrar en modo edición.</p>
+      <div class="table-scroll"><table class="roster">${thead}<tbody>${rows}</tbody></table></div>
+      ${details}
+      ${companyAbsencesSummary(secciones, apuntesMap)}
+      ${companyConfirmSummary(secciones, confirmMap)}
+      <div style="margin:10px 0;"><button class="small-btn" onclick="toggleHistory()">${historyOpen?'Cerrar historial':'Ver historial de cambios'}</button></div>
+      ${historyHtml}
+    </div>
+  </div>`;
+}
+/* ================= PERNOCTAS ================= */
+// Normalmente el finde de pernoctas son 2 días (Vie, Sáb). Para un puente
+// concreto (ej. festivo en lunes) se puede alargar la ventana para ESA
+// semana metiendo aquí la clave (el viernes de esa semana, formato
+// YYYY-MM-DD) y cuántos días desde el viernes hay que mostrar.
+// 0=Vie 1=Sáb 2=Dom 3=Lun 4=Mar 5=Mié 6=Jue
+const PERNOCTA_DIAS_POR_SEMANA = {
+  '2026-10-09': 4, // puente del 12 de octubre: Vie9, Sáb10, Dom11 y Lun12 libres; martes 13 ya obligatorio en la AGM
+};
+function pernoctaDiasCountFor(week){ return PERNOCTA_DIAS_POR_SEMANA[week.key] || 2; }
+function pernoctaDiasCount(){ return pernoctaDiasCountFor(ACTIVE_WEEK); }
+function pernoctaObligatoria(personaId, dia){
+  if(pernoctaDiasCount()>2) return false; // semana excepcional (puente): nada obligatorio esa semana
+  if(dia!==0) return false; // solo el viernes puede ser obligatorio
+  if(EXTERNADOS.has(personaId)) return false;
+  return true;
+}
+let PASE_SECCIONES_CACHE = [];
+function onPaseSeccionChange(seccionNum){
+  const sec = PASE_SECCIONES_CACHE.find(s=>String(s.seccion)===String(seccionNum));
+  const selP = document.getElementById('pase-persona');
+  if(!sec || !selP) return;
+  selP.innerHTML = sec.people.map(p=>`<option value="${p.id}">${p.apellidos}, ${p.nombre}</option>`).join('');
+}
+async function concederPase(){
+  const personaId = document.getElementById('pase-persona').value;
+  const dia = parseInt(document.getElementById('pase-dia').value, 10);
+  const ok = await setPernocta(personaId, dia, false, null);
+  if(ok) showToast('Pase concedido — puede dormir fuera ese día.');
+  await renderAdminPernoctas();
+}
+async function revocarPase(){
+  const personaId = document.getElementById('pase-persona').value;
+  const dia = parseInt(document.getElementById('pase-dia').value, 10);
+  const ok = await setPernocta(personaId, dia, true, null);
+  if(ok) showToast('Pase revocado — vuelve a dormir en la AGM ese día.');
+  await renderAdminPernoctas();
+}
+async function fetchPernoctaOwn(personaId, semanaKey){
+  const { data } = await sb.from('pernoctas').select('dia,duerme_agm,direccion,telefono').eq('persona_id',personaId).eq('semana_inicio',semanaKey);
+  const map = {};
+  (data||[]).forEach(r=>{ map[r.dia] = { duerme_agm:r.duerme_agm, direccion:r.direccion, telefono:r.telefono }; });
+  return map;
+}
+async function fetchPernoctaSeccion(compania, seccion, semanaKey){
+  const { data } = await sb.rpc('pernoctas_de_seccion', { p_compania:compania, p_seccion:seccion, p_semana:semanaKey });
+  const map = {};
+  (data||[]).forEach(r=>{ map[r.persona_id+'|'+r.dia] = r.duerme_agm; });
+  return map;
+}
+async function fetchPernoctaMapAdmin(personaIds, semanaKey){
+  const map = {};
+  if(personaIds.length===0) return map;
+  const { data } = await sb.from('pernoctas').select('persona_id,dia,duerme_agm,direccion,telefono').eq('semana_inicio',semanaKey).in('persona_id',personaIds);
+  (data||[]).forEach(r=>{ map[r.persona_id+'|'+r.dia] = { duerme_agm:r.duerme_agm, direccion:r.direccion, telefono:r.telefono }; });
+  return map;
+}
+async function fetchConfirmMapPernocta(personaIds, semanaKey){
+  const map = {};
+  if(personaIds.length===0) return map;
+  const { data } = await sb.from('confirmaciones_pernocta').select('persona_id,confirmado').eq('semana_inicio', semanaKey).in('persona_id', personaIds);
+  (data||[]).forEach(row=>{ map[row.persona_id] = row.confirmado; });
+  return map;
+}
+async function setPernocta(personaId, dia, duermeAgm, direccion, telefono){
+  const { error } = await sb.from('pernoctas').upsert(
+    { persona_id:personaId, semana_inicio:ACTIVE_WEEK.key, dia, obligatoria: pernoctaObligatoria(personaId,dia), duerme_agm:duermeAgm, direccion: duermeAgm ? null : (direccion||null), telefono: duermeAgm ? null : (telefono||null) },
+    { onConflict:'persona_id,semana_inicio,dia' }
+  );
+  if(error) showToast('No se pudo guardar: '+error.message);
+  return !error;
+}
+
+/* ---- Alumno: pernoctas ---- */
+async function renderAlumnoPernoctas(){
+  const { persona, seccionPeople } = CURRENT;
+  const code = ''+persona.compania+persona.seccion;
+  if(SEMANAS_OCULTAS.has(ACTIVE_WEEK.key) || weekHasElapsed(ACTIVE_WEEK)) setActiveWeek(firstVisibleWeekIndex());
+  const { data: companiaInfo } = await sb.from('companias').select('permitir_desbloqueo_pernocta,hora_corte').eq('numero', persona.compania).single();
+  const unlocked = !!(companiaInfo && companiaInfo.permitir_desbloqueo_pernocta);
+  const horaCorte = companiaInfo ? companiaInfo.hora_corte : '10:00:00';
+  const open = weekIsOpen(ACTIVE_WEEK, horaCorte);
+  const pernoctaListEl = document.getElementById('alumno-pernocta-table');
+  pernoctaListEl.classList.toggle('plazo-abierto', open);
+  pernoctaListEl.classList.toggle('plazo-cerrado', !open);
+  document.getElementById('alumno-week-select').innerHTML = weekSelectHtmlWeekend('onAlumnoWeekChange', horaCorte, true);
+  document.getElementById('alumno-notice').innerHTML = '';
+
+  const seccionMap = await fetchPernoctaSeccion(persona.compania, persona.seccion, ACTIVE_WEEK.key);
+  const ownMap = await fetchPernoctaOwn(persona.id, ACTIVE_WEEK.key);
+  function valFor(id, dia){
+    if(id===persona.id && ownMap.hasOwnProperty(dia)) return ownMap[dia].duerme_agm;
+    const key = id+'|'+dia;
+    if(seccionMap.hasOwnProperty(key)) return seccionMap[key];
+    return pernoctaObligatoria(id, dia);
+  }
+
+  const list = document.getElementById('alumno-pernocta-table');
+  document.getElementById('alumno-pernocta-view-toggle').innerHTML = `
+    <div class="view-toggle">
+      <button class="${!verSoloYoPernocta?'active':''}" onclick="setVerSoloYoPernocta(false)">👥 Toda la sección</button>
+      <button class="${verSoloYoPernocta?'active':''}" onclick="setVerSoloYoPernocta(true)">👤 Solo yo</button>
+    </div>`;
+  let html = '';
+  const filaPeoplePernocta = verSoloYoPernocta ? seccionPeople.filter(p=>p.id===persona.id) : seccionPeople;
+  filaPeoplePernocta.forEach(p=>{
+    const isMe = p.id===persona.id;
+    let days = '';
+    for(let d=0; d<pernoctaDiasCount(); d++){
+      const val = valFor(p.id, d);
+      const tieneExcepcion = (p.id===persona.id) ? ownMap.hasOwnProperty(d) : seccionMap.hasOwnProperty(p.id+'|'+d);
+      const locked = pernoctaObligatoria(p.id, d) && !unlocked && !tieneExcepcion;
+      if(locked){
+        days += `<div class="pernocta-day"><span class="daylabel">${DAY_NAMES[d]}</span><span class="pernocta-badge agm">AGM</span></div>`;
+      } else if(isMe && open){
+        days += `<div class="pernocta-day"><span class="daylabel">${DAY_NAMES[d]}</span>
+          <select class="pernocta-select" onchange="onPernoctaSelect(${d}, this.value)">
+            <option value="agm" ${val?'selected':''}>AGM</option>
+            <option value="fuera" ${!val?'selected':''}>Fuera (X)</option>
+          </select></div>`;
+      } else {
+        days += `<div class="pernocta-day"><span class="daylabel">${DAY_NAMES[d]}</span><span class="pernocta-badge ${val?'agm':'fuera'}">${val?'AGM':'X'}</span></div>`;
+      }
+    }
+    if(isMe && open){
+      const anyFuera = Array.from({length:pernoctaDiasCount()},(_,i)=>i).some(d=>!valFor(p.id,d));
+      if(anyFuera){
+        const existingTel = ((ownMap[0]&&ownMap[0].telefono) || (ownMap[1]&&ownMap[1].telefono) || '').replace(/"/g,'&quot;');
+        const existing = ((ownMap[0]&&ownMap[0].direccion) || (ownMap[1]&&ownMap[1].direccion) || '').replace(/"/g,'&quot;');
+        days += `<input type="tel" class="pernocta-addr" id="pernocta-tel-shared" placeholder="Teléfono de contacto" value="${existingTel}" onchange="onPernoctaContacto()" style="flex-basis:100%;">`;
+        days += `<input type="text" class="pernocta-addr" id="pernocta-addr-shared" placeholder="Dirección donde duermes fuera (una para todo el finde)" value="${existing}" onchange="onPernoctaContacto()" style="flex-basis:100%;">`;
+      }
+    }
+    html += `<div class="pernocta-row ${isMe?'me':''}">
+      <div class="pernocta-name">${p.apellidos}, ${p.nombre}${isMe?' (tú)':''}</div>
+      <div class="pernocta-days">${days}</div>
+    </div>`;
+  });
+  list.innerHTML = html;
+
+  const totalsHtml = Array.from({length:pernoctaDiasCount()},(_,i)=>i).map(d=>{
+    const n = seccionPeople.filter(p=>valFor(p.id,d)).length;
+    return `<span class="${countCellClass(n, seccionPeople.length)}" style="padding:2px 6px;">${DAY_NAMES[d]}: ${n}/${seccionPeople.length} en AGM</span>`;
+  }).join('');
+  document.getElementById('alumno-pernocta-totalbar').innerHTML = `<span>Total sección ${code}</span>${totalsHtml}`;
+
+  document.getElementById('alumno-pernocta-summary').innerHTML = Array.from({length:pernoctaDiasCount()},(_,i)=>i).map(d=>{
+    const n = seccionPeople.filter(p=>valFor(p.id,d)).length;
+    const fuera = seccionPeople.length - n;
+    return `<div class="stat-card"><div class="num">${n}/${seccionPeople.length}</div><div class="lbl">AGM ${DAY_NAMES[d]} ${fmt(ACTIVE_WEEK.days[d])} · ${fuera} fuera</div></div>`;
+  }).join('');
+
+  document.getElementById('alumno-pernocta-own').innerHTML = '';
+
+  const { data: confRow } = await sb.from('confirmaciones_pernocta').select('confirmado,confirmado_en').eq('persona_id', persona.id).eq('semana_inicio', ACTIVE_WEEK.key).maybeSingle();
+  const confirmado = !!(confRow && confRow.confirmado);
+  const confTs = confRow && confRow.confirmado_en ? new Date(confRow.confirmado_en).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : null;
+  document.getElementById('alumno-pernocta-confirm').innerHTML = `
+    <div class="confirm-box ${confirmado?'done':'pending'}">
+      <input type="checkbox" id="confirm-check-pernocta" ${confirmado?'checked':''} ${open?'':'disabled'} onchange="onConfirmTogglePernocta(this.checked)">
+      <label for="confirm-check-pernocta">${confirmado
+        ? `He revisado dónde duermo este fin de semana y es correcto.<span class="ts">Confirmado el ${confTs}</span>`
+        : `⚠️ NO HAS CONFIRMADO DÓNDE DUERMES ESTE FIN DE SEMANA<span class="ts">Revisa la lista y marca aquí cuando esté correcto</span>`}</label>
+    </div>`;
+}
+async function setConfirmPernocta(personaId, checked){
+  const { error } = await sb.from('confirmaciones_pernocta').upsert(
+    { persona_id: personaId, semana_inicio: ACTIVE_WEEK.key, confirmado: checked, confirmado_en: checked ? new Date().toISOString() : null },
+    { onConflict: 'persona_id,semana_inicio' }
+  );
+  if(error) showToast('No se pudo guardar: '+error.message);
+  return !error;
+}
+async function onConfirmTogglePernocta(checked){
+  await setConfirmPernocta(CURRENT.persona.id, checked);
+  await renderAlumnoPernoctas();
+}
+async function onPernoctaSelect(dia, value){
+  const duermeAgm = value==='agm';
+  const addrInput = document.getElementById('pernocta-addr-shared');
+  const telInput = document.getElementById('pernocta-tel-shared');
+  await setPernocta(CURRENT.persona.id, dia, duermeAgm, addrInput ? addrInput.value : null, telInput ? telInput.value : null);
+  await setConfirmPernocta(CURRENT.persona.id, false);
+  await renderAlumnoPernoctas();
+}
+async function onPernoctaContacto(){
+  // un solo teléfono y una sola dirección para todo el finde: se aplican a cualquier día que esté marcado "Fuera"
+  const telefono = document.getElementById('pernocta-tel-shared').value;
+  const direccion = document.getElementById('pernocta-addr-shared').value;
+  const ownMap = await fetchPernoctaOwn(CURRENT.persona.id, ACTIVE_WEEK.key);
+  for(let d=0; d<pernoctaDiasCount(); d++){
+    const estaFuera = ownMap.hasOwnProperty(d) ? !ownMap[d].duerme_agm : !pernoctaObligatoria(CURRENT.persona.id, d);
+    if(estaFuera) await setPernocta(CURRENT.persona.id, d, false, direccion, telefono);
+  }
+  await setConfirmPernocta(CURRENT.persona.id, false);
+  await renderAlumnoPernoctas();
+}
+
+/* ---- Admin: pernoctas ---- */
+let expandedPernoctaSections = new Set();
+function togglePernoctaSectionDetail(code){ if(expandedPernoctaSections.has(code)) expandedPernoctaSections.delete(code); else expandedPernoctaSections.add(code); renderAdminPernoctas(); }
+async function togglePernoctaUnlock(checked){
+  const { error } = await sb.from('companias').update({permitir_desbloqueo_pernocta:checked}).eq('numero', CURRENT.compania);
+  if(error) showToast('No se pudo cambiar: '+error.message);
+  await renderAdminPernoctas();
+}
+function pernoctaDetailTable(sec, pernMap, confirmMap){
+  function valFor(id,dia){ const k=id+'|'+dia; return pernMap.hasOwnProperty(k)?pernMap[k].duerme_agm:pernoctaObligatoria(id,dia); }
+  function addrFor(id,dia){ const k=id+'|'+dia; return pernMap.hasOwnProperty(k)?(pernMap[k].direccion||''):''; }
+  function telFor(id,dia){ const k=id+'|'+dia; return pernMap.hasOwnProperty(k)?(pernMap[k].telefono||''):''; }
+  let thead = '<thead><tr class="daynames"><th class="name-cell">'+sec.code+'</th>';
+  for(let d=0; d<pernoctaDiasCount(); d++) thead += `<th>${DAY_NAMES[d]}<span class="colhead-sub">${fmt(ACTIVE_WEEK.days[d])}</span></th>`;
+  thead += '<th>Confirmado</th></tr></thead>';
+  let tbody = '<tbody>';
+  sec.people.forEach(p=>{
+    tbody += `<tr><td class="name-cell">${p.apellidos}, ${p.nombre}</td>`;
+    for(let d=0; d<pernoctaDiasCount(); d++){
+      const val = valFor(p.id,d);
+      const addr = addrFor(p.id,d).replace(/"/g,'&quot;');
+      const tel = telFor(p.id,d).replace(/"/g,'&quot;');
+      const faltaDireccion = !val && !addr && !tel;
+      tbody += `<td>
+        <select class="pernocta-select" onchange="onAdminPernoctaSelect('${p.id}',${d},this.value)">
+          <option value="agm" ${val?'selected':''}>AGM</option>
+          <option value="fuera" ${!val?'selected':''}>Fuera</option>
+        </select>
+        <input type="tel" class="pernocta-addr ${val?'hidden':''}" id="admin-pernocta-tel-${p.id}-${d}" value="${tel}" placeholder="Teléfono" onchange="onAdminPernoctaContacto('${p.id}',${d})">
+        <input type="text" class="pernocta-addr ${val?'hidden':''}" id="admin-pernocta-addr-${p.id}-${d}" value="${addr}" placeholder="Dirección" onchange="onAdminPernoctaContacto('${p.id}',${d})">
+        ${faltaDireccion ? `<div style="font-size:.65rem;color:var(--danger);margin-top:3px;">⚠ sin teléfono ni dirección</div>` : ''}
+      </td>`;
+    }
+    const confirmado = !!confirmMap[p.id];
+    tbody += `<td><span class="pernocta-badge ${confirmado?'agm':'fuera'}">${confirmado?'✓ Sí':'✗ No'}</span></td>`;
+    tbody += '</tr>';
+  });
+  tbody += '</tbody>';
+  let tfoot = '<tfoot><tr><td class="name-cell">Total AGM</td>';
+  for(let d=0; d<pernoctaDiasCount(); d++){ const n = sec.people.filter(p=>valFor(p.id,d)).length; tfoot += `<td class="mono ${countCellClass(n, sec.people.length)}">${n}/${sec.people.length}</td>`; }
+  const nConf = sec.people.filter(p=>confirmMap[p.id]).length;
+  tfoot += `<td class="mono ${countCellClass(nConf, sec.people.length)}">${nConf}/${sec.people.length}</td>`;
+  tfoot += '</tr></tfoot>';
+  return `<div class="admin-edit-note">Modo administración: puedes cambiar cualquier casilla y ver las direcciones.</div>
+    <div class="table-scroll"><table class="roster admin-edit">${thead}${tbody}${tfoot}</table></div>`;
+}
+let viewedPernoctaSections = new Set();
+function togglePernoctaView(code){ if(viewedPernoctaSections.has(code)) viewedPernoctaSections.delete(code); else viewedPernoctaSections.add(code); renderAdminPernoctas(); }
+function pernoctaViewOnlyTable(sec, pernMap, confirmMap){
+  function valFor(id,dia){ const k=id+'|'+dia; return pernMap.hasOwnProperty(k)?pernMap[k].duerme_agm:pernoctaObligatoria(id,dia); }
+  function addrFor(id,dia){ const k=id+'|'+dia; return pernMap.hasOwnProperty(k)?(pernMap[k].direccion||''):''; }
+  function telFor(id,dia){ const k=id+'|'+dia; return pernMap.hasOwnProperty(k)?(pernMap[k].telefono||''):''; }
+  const n = pernoctaDiasCount();
+  let thead = '<thead><tr class="daynames"><th class="name-cell">'+sec.code+'</th>';
+  for(let d=0; d<n; d++) thead += `<th>${DAY_NAMES[d]}<span class="colhead-sub">${fmt(ACTIVE_WEEK.days[d])}</span></th>`;
+  thead += '<th>Confirmado</th></tr></thead>';
+  let tbody = '<tbody>';
+  sec.people.forEach(p=>{
+    tbody += `<tr><td class="name-cell">${p.apellidos}, ${p.nombre}</td>`;
+    for(let d=0; d<n; d++){
+      const val = valFor(p.id,d);
+      const addr = addrFor(p.id,d);
+      const tel = telFor(p.id,d);
+      let extra = '';
+      if(!val && (tel || addr)) extra = `<div style="font-size:.65rem;color:var(--ink-soft);margin-top:3px;">${tel?'📞 '+tel:''}${(tel&&addr)?' · ':''}${addr}</div>`;
+      else if(!val && !addr && !tel) extra = `<div style="font-size:.65rem;color:var(--danger);margin-top:3px;">⚠ sin teléfono ni dirección</div>`;
+      tbody += `<td><span class="pernocta-badge ${val?'agm':'fuera'}">${val?'AGM':'X'}</span>${extra}</td>`;
+    }
+    const confirmado = !!confirmMap[p.id];
+    tbody += `<td><span class="pernocta-badge ${confirmado?'agm':'fuera'}">${confirmado?'✓ Sí':'✗ No'}</span></td>`;
+    tbody += '</tr>';
+  });
+  tbody += '</tbody>';
+  let tfoot = '<tfoot><tr><td class="name-cell">Total AGM</td>';
+  for(let d=0; d<n; d++){ const c = sec.people.filter(p=>valFor(p.id,d)).length; tfoot += `<td class="mono ${countCellClass(c, sec.people.length)}">${c}/${sec.people.length}</td>`; }
+  const nConf = sec.people.filter(p=>confirmMap[p.id]).length;
+  tfoot += `<td class="mono ${countCellClass(nConf, sec.people.length)}">${nConf}/${sec.people.length}</td>`;
+  tfoot += '</tr></tfoot>';
+  return `<div class="admin-edit-note">Solo consulta — para cambiar algo usa "Editar ${sec.code}"</div>
+    <div class="table-scroll"><table class="roster">${thead}${tbody}${tfoot}</table></div>`;
+}
+function pernoctaCompanyBlockHtml(c, secciones, pernMap, confirmMap){
+  function valFor(id,dia){ const k=id+'|'+dia; return pernMap.hasOwnProperty(k)?pernMap[k].duerme_agm:pernoctaObligatoria(id,dia); }
+  let rows='';
+  secciones.forEach(sec=>{
+    rows += `<tr><td class="name-cell"><button class="small-btn" style="border:none;background:none;padding:0;font-weight:600;color:var(--ink);text-decoration:underline;cursor:pointer;" onclick="togglePernoctaView('${sec.code}')">${sec.code}</button> <span style="color:var(--ink-soft)">(${sec.people.length})</span></td>`;
+    for(let d=0; d<pernoctaDiasCount(); d++){ const n = sec.people.filter(p=>valFor(p.id,d)).length; rows += `<td class="mono ${countCellClass(n, sec.people.length)}">${n}/${sec.people.length}</td>`; }
+    const nConf = sec.people.filter(p=>confirmMap[p.id]).length;
+    rows += `<td class="mono ${countCellClass(nConf, sec.people.length)}">${nConf}/${sec.people.length}</td>`;
+    rows += '</tr>';
+  });
+  let thead = '<thead><tr class="daynames"><th class="name-cell">Sección</th>';
+  for(let d=0; d<pernoctaDiasCount(); d++) thead += `<th>${DAY_NAMES[d]}<span class="colhead-sub">${fmt(ACTIVE_WEEK.days[d])}</span></th>`;
+  thead += '<th>Confirmado</th></tr></thead>';
+
+  let sectionButtons = '';
+  secciones.forEach(sec=> sectionButtons += `<button class="big-btn" onclick="togglePernoctaSectionDetail('${sec.code}')">${expandedPernoctaSections.has(sec.code)?'Cerrar':'✎ Editar'} ${sec.code}</button>`);
+
+  let details = '';
+  secciones.forEach(sec=>{
+    if(viewedPernoctaSections.has(sec.code)) details += pernoctaViewOnlyTable(sec, pernMap, confirmMap);
+    if(expandedPernoctaSections.has(sec.code)) details += pernoctaDetailTable(sec, pernMap, confirmMap);
+  });
+
+  return `<div class="company-block">
+    <div class="company-head"><h4>${c}ª Compañía</h4><span class="chev">${SECTIONS_PER_COMPANY} secciones</span></div>
+    <div class="company-body">
+      <div class="section-btn-row">${sectionButtons}</div>
+      <p class="small-note" style="margin-top:0;">Toca el número de sección (ej. "111") para verla sin entrar en modo edición.</p>
+      <div class="table-scroll"><table class="roster">${thead}<tbody>${rows}</tbody></table></div>
+      ${details}
+    </div>
+  </div>`;
+}
+async function onAdminPernoctaSelect(personaId, dia, value){
+  const duermeAgm = value==='agm';
+  const addrInput = document.getElementById('admin-pernocta-addr-'+personaId+'-'+dia);
+  const telInput = document.getElementById('admin-pernocta-tel-'+personaId+'-'+dia);
+  if(addrInput) addrInput.classList.toggle('hidden', duermeAgm);
+  if(telInput) telInput.classList.toggle('hidden', duermeAgm);
+  await setPernocta(personaId, dia, duermeAgm, addrInput?addrInput.value:null, telInput?telInput.value:null);
+  await renderAdminPernoctas();
+}
+async function onAdminPernoctaContacto(personaId, dia){
+  const addrInput = document.getElementById('admin-pernocta-addr-'+personaId+'-'+dia);
+  const telInput = document.getElementById('admin-pernocta-tel-'+personaId+'-'+dia);
+  await setPernocta(personaId, dia, false, addrInput?addrInput.value:null, telInput?telInput.value:null);
+  await renderAdminPernoctas();
+}
+async function exportPernoctaExcel(){
+  const c = CURRENT.compania;
+  const secciones = await fetchCompanySections(c);
+  const allIds = secciones.flatMap(s=>s.people.map(p=>p.id));
+  const pernMap = await fetchPernoctaMapAdmin(allIds, ACTIVE_WEEK.key);
+  function valFor(id,dia){ const k=id+'|'+dia; return pernMap.hasOwnProperty(k)?pernMap[k].duerme_agm:pernoctaObligatoria(id,dia); }
+  function addrFor(id,dia){ const k=id+'|'+dia; return pernMap.hasOwnProperty(k)?(pernMap[k].direccion||''):''; }
+  function telFor(id,dia){ const k=id+'|'+dia; return pernMap.hasOwnProperty(k)?(pernMap[k].telefono||''):''; }
+  function direccionCombinada(id){
+    for(let d=0; d<pernoctaDiasCount(); d++){
+      if(!valFor(id,d)){
+        const addr = addrFor(id,d);
+        if(addr) return addr;
+      }
+    }
+    // duerme fuera pero no ha puesto dirección
+    return Array.from({length:pernoctaDiasCount()},(_,i)=>i).some(d=>!valFor(id,d)) ? '(sin apuntar)' : '';
+  }
+  function telefonoCombinado(id){
+    for(let d=0; d<pernoctaDiasCount(); d++){
+      if(!valFor(id,d)){
+        const tel = telFor(id,d);
+        if(tel) return tel;
+      }
+    }
+    return Array.from({length:pernoctaDiasCount()},(_,i)=>i).some(d=>!valFor(id,d)) ? '(sin apuntar)' : '';
+  }
+  const dayHeaders = Array.from({length:pernoctaDiasCount()},(_,i)=>i).map(d=>`${DAY_NAMES[d]}\n${fmt(ACTIVE_WEEK.days[d])}`);
+  const wb = XLSX.utils.book_new();
+
+  // Hoja de totales por sección
+  const totHeader = ['Sección', ...dayHeaders];
+  const totRows = [totHeader];
+  secciones.forEach(sec=>{
+    const row = [`${sec.code} (${sec.people.length} efvos.)`];
+    for(let d=0; d<pernoctaDiasCount(); d++){ const n = sec.people.filter(p=>valFor(p.id,d)).length; row.push(n+'/'+sec.people.length); }
+    totRows.push(row);
+  });
+  const grandRow = [`TOTAL ${c}ª COMPAÑÍA`];
+  for(let d=0; d<pernoctaDiasCount(); d++){ const n = allIds.filter(id=>valFor(id,d)).length; grandRow.push(n+'/'+allIds.length); }
+  totRows.push(grandRow);
+  const wsTot = XLSX.utils.aoa_to_sheet(totRows);
+  wsTot['!cols'] = [{wch:22}, {wch:13},{wch:13},{wch:13}];
+  xlsxStyleSheet(wsTot, secciones.length, totHeader.length);
+  XLSX.utils.book_append_sheet(wb, wsTot, 'Totales');
+
+  // Una hoja por sección: Viernes, Sábado, Teléfono y Dirección, en ese orden
+  secciones.forEach(sec=>{
+    const header = ['Nombre y apellidos', ...dayHeaders, 'Teléfono', 'Dirección'];
+    const rows = [header];
+    sec.people.forEach(p=>{
+      const row = [p.apellidos+', '+p.nombre];
+      for(let d=0; d<pernoctaDiasCount(); d++) row.push(valFor(p.id,d) ? 'AGM' : 'X');
+      row.push(telefonoCombinado(p.id));
+      row.push(direccionCombinada(p.id));
+      rows.push(row);
+    });
+    const totalRow = ['TOTAL'];
+    for(let d=0; d<pernoctaDiasCount(); d++){ const n = sec.people.filter(p=>valFor(p.id,d)).length; totalRow.push(n+'/'+sec.people.length); }
+    totalRow.push('', '');
+    rows.push(totalRow);
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols'] = [{wch:26}, {wch:13},{wch:13}, {wch:16}, {wch:40}];
+    xlsxStyleSheet(ws, sec.people.length, header.length, (rIdx, cIdx)=> cIdx < pernoctaDiasCount() && pernoctaObligatoria(sec.people[rIdx].id, cIdx));
+    XLSX.utils.book_append_sheet(wb, ws, 'Sección '+sec.code);
+  });
+
+  const filename = `PortalAGM_Pernoctas_${c}Cia_${fmt(ACTIVE_WEEK.days[0]).replace('/','-')}_a_${fmt(ACTIVE_WEEK.days[6]).replace('/','-')}.xlsx`;
+  XLSX.writeFile(wb, filename);
+}
+async function renderAdminPernoctas(){
+  const c = CURRENT.compania;
+  const { data: companiaInfo } = await sb.from('companias').select('*').eq('numero',c).single();
+  CURRENT.companiaInfo = companiaInfo;
+  document.getElementById('admin-week-select').innerHTML = weekSelectHtmlWeekend('onAdminWeekChange', companiaInfo.hora_corte, false);
+  document.getElementById('admin-notice').innerHTML = '';
+
+  const secciones = await fetchCompanySections(c);
+  const allPeople = secciones.flatMap(s=>s.people);
+  const allIds = allPeople.map(p=>p.id);
+  PASE_SECCIONES_CACHE = secciones;
+
+  document.getElementById('admin-pernocta-controls').innerHTML = `
+    <div class="admin-panel">
+      <div class="panel-row">
+        <div class="switch-label">Permitir dormir fuera el viernes<span class="sub2">Permiso extraordinario / pase de horas para TODA la ${c}ª esta semana — para puentes, no lo normal</span></div>
+        <label class="switch"><input type="checkbox" ${companiaInfo.permitir_desbloqueo_pernocta?'checked':''} onchange="togglePernoctaUnlock(this.checked)"><span class="track"></span><span class="thumb"></span></label>
+      </div>
+      <div class="panel-row">
+        <div class="switch-label">Ocultar esta semana a los alumnos (Comidas y Pernoctas)
+          <span class="sub2">No borra nada — tú sigues viendo todas las semanas, pasadas incluidas. Las ya pasadas se les ocultan solas a los alumnos</span>
+        </div>
+        <label class="switch"><input type="checkbox" ${SEMANAS_OCULTAS.has(ACTIVE_WEEK.key)?'checked':''} onchange="toggleSemanaOculta(this.checked)"><span class="track"></span><span class="thumb"></span></label>
+      </div>
+      <div class="panel-row" style="flex-direction:column;align-items:stretch;">
+        <div class="switch-label">Pase de horas / permiso extraordinario individual
+          <span class="sub2">Da permiso a UN alumno concreto para dormir fuera un día, sin tocar al resto de la compañía</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+          <select id="pase-seccion" onchange="onPaseSeccionChange(this.value)" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;">
+            ${secciones.map(sec=>`<option value="${sec.seccion}">Sección ${sec.code}</option>`).join('')}
+          </select>
+          <select id="pase-persona" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;">
+            ${secciones[0].people.map(p=>`<option value="${p.id}">${p.apellidos}, ${p.nombre}</option>`).join('')}
+          </select>
+          <select id="pase-dia" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;">
+            ${Array.from({length: pernoctaDiasCount()}, (_,d)=>`<option value="${d}">${DAY_NAMES[d]} ${fmt(ACTIVE_WEEK.days[d])}</option>`).join('')}
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+          <button class="small-btn" onclick="concederPase()">✅ Conceder pase (duerme fuera)</button>
+          <button class="small-btn" onclick="revocarPase()">↩️ Revocar (vuelve a AGM)</button>
+        </div>
+      </div>
+      <div class="panel-row">
+        <div class="switch-label">Exportar la tabla de la ${c}ª Compañía (semana seleccionada)<span class="sub2">Una hoja por sección, más totales y direcciones — lista para imprimir</span></div>
+        <button class="primary-btn" style="width:auto;padding:10px 16px;" onclick="exportPernoctaExcel()">📄 Exportar a Excel</button>
+      </div>
+      <div class="panel-row">
+        <div class="switch-label">Confirmar a todos<span class="sub2">Por si se cerró el plazo y hay quien no llegó a confirmar dónde duerme</span></div>
+        <button class="small-btn" onclick="confirmarTodosPernocta()">✅ Confirmar todos</button>
+      </div>
+    </div>`;
+
+  const pernMap = await fetchPernoctaMapAdmin(allIds, ACTIVE_WEEK.key);
+  const confirmMapPern = await fetchConfirmMapPernocta(allIds, ACTIVE_WEEK.key);
+  function valFor(id,dia){ const k=id+'|'+dia; return pernMap.hasOwnProperty(k)?pernMap[k].duerme_agm:pernoctaObligatoria(id,dia); }
+  const nAGM = (dia)=> allPeople.filter(p=>valFor(p.id,dia)).length;
+  const nConfirmadosPern = allPeople.filter(p=>confirmMapPern[p.id]).length;
+
+  document.getElementById('admin-pernocta-summary').innerHTML = Array.from({length:pernoctaDiasCount()},(_,d)=>
+    `<div class="stat-card"><div class="num">${nAGM(d)}/${allPeople.length}</div><div class="lbl">AGM ${DAY_NAMES[d]} ${fmt(ACTIVE_WEEK.days[d])}</div></div>`
+  ).join('') + `<div class="stat-card"><div class="num">${nConfirmadosPern}/${allPeople.length}</div><div class="lbl">Han confirmado esta semana</div></div>`;
+
+  document.getElementById('admin-pernocta-companies').innerHTML = pernoctaCompanyBlockHtml(c, secciones, pernMap, confirmMapPern);
+
+  let cells = '';
+  for(let d=0; d<pernoctaDiasCount(); d++) cells += `<div><div class="num mono">${nAGM(d)}</div><div class="lbl">AGM ${DAY_NAMES[d]}</div></div>`;
+  document.getElementById('admin-pernocta-grand').innerHTML = `<div><div class="num mono">${allPeople.length}</div><div class="lbl">Efectivos ${c}ª</div></div>` + cells;
+}
+
+/* ================= SERVICIOS ================= */
+const TIPO_LABEL = { cuartelero:'Cuartelero', imaginaria:'Imaginaria', imaginaria_cuartelero:'Imaginaria de Cuartelero', imaginaria_imaginaria:'Imaginaria de Imaginaria' };
+function servicioLabel(s){ return TIPO_LABEL[s.tipo] + (s.tipo==='imaginaria' && s.turno ? ` (turno ${s.turno})` : ''); }
+function fmtFecha(fechaStr){
+  const d = new Date(fechaStr+'T00:00:00');
+  return d.toLocaleDateString('es-ES',{weekday:'short',day:'2-digit',month:'2-digit'});
+}
+
+/* ---- Alumno ---- */
+async function renderAlumnoServicios(){
+  document.getElementById('alumno-week-select').innerHTML = '';
+  document.getElementById('alumno-notice').innerHTML = '';
+  const persona = CURRENT.persona;
+  const todayStr = ymd(new Date());
+  const { data: todos, error } = await sb.from('servicios')
+    .select('*, personas(nombre,apellidos,seccion,compania)')
+    .eq('compania', persona.compania).gte('fecha', todayStr)
+    .order('fecha').order('tipo').order('turno');
+  if(error){ showToast('No se pudo cargar: '+error.message); return; }
+
+  const propios = (todos||[]).filter(s=>s.persona_id===persona.id);
+  let html = '';
+  if(propios.length===0){
+    html = '<div class="small-note">No tienes servicios próximos asignados.</div>';
+  }
+  propios.forEach(s=>{
+    const restoEseDia = (todos||[]).filter(o=> o.fecha===s.fecha && o.persona_id!==persona.id);
+    let grupo = '';
+    if(restoEseDia.length){
+      grupo = '<div class="grupo"><b>Ese día también tienen servicio:</b><br>' + restoEseDia.map(o=>`${servicioLabel(o)} — ${o.personas.apellidos}, ${o.personas.nombre} (Sección ${o.personas.compania}${o.personas.seccion})`).join('<br>') + '</div>';
+    }
+    html += `<div class="servicio-card">
+      <div class="titulo">${servicioLabel(s)}</div>
+      <div class="meta">${fmtFecha(s.fecha)}</div>
+      ${grupo}
+      <button class="small-btn" style="margin-top:8px;" onclick="abrirSolicitudCambio(${s.id})">Solicitar cambio</button>
+      <div id="cambio-form-${s.id}" class="hidden" style="margin-top:8px;"></div>
+    </div>`;
+  });
+  document.getElementById('alumno-servicios-lista').innerHTML = html;
+
+  const { data: cambios } = await sb.from('cambios_servicio')
+    .select('*, servicios(fecha,tipo,turno), sustituto:personas!cambios_servicio_sustituto_id_fkey(nombre,apellidos)')
+    .eq('solicitante_id', persona.id).order('creado_en',{ascending:false});
+  document.getElementById('alumno-cambios-lista').innerHTML = (cambios&&cambios.length) ? cambios.map(c=>`
+    <div class="servicio-card">
+      <div class="titulo">${c.servicios?servicioLabel(c.servicios):'(servicio eliminado)'} ${c.servicios?'— '+fmtFecha(c.servicios.fecha):''}</div>
+      <div class="meta">Sustituto: ${c.sustituto?c.sustituto.apellidos+', '+c.sustituto.nombre:''} · <span class="badge-estado ${c.estado}">${c.estado}</span></div>
+      ${c.motivo_resolucion ? `<div class="meta">Motivo del admin: ${c.motivo_resolucion}</div>` : ''}
+    </div>`).join('') : '<div class="small-note">Sin solicitudes.</div>';
+
+  const { data: deudas } = await sb.from('deudas_servicio')
+    .select('*, deudor:personas!deudas_servicio_deudor_id_fkey(nombre,apellidos), acreedor:personas!deudas_servicio_acreedor_id_fkey(nombre,apellidos)')
+    .or(`deudor_id.eq.${persona.id},acreedor_id.eq.${persona.id}`).eq('saldada', false);
+  document.getElementById('alumno-deudas-lista').innerHTML = (deudas&&deudas.length) ? deudas.map(d=>{
+    const esDeudor = d.deudor_id===persona.id;
+    const otro = esDeudor ? d.acreedor : d.deudor;
+    return `<div class="servicio-card"><div class="titulo">${esDeudor?'Le debes a':'Te debe'} ${otro.apellidos}, ${otro.nombre}</div><div class="meta">${TIPO_LABEL[d.tipo]||d.tipo}${d.turno?' (turno '+d.turno+')':''} · ${d.entre_semana?'entre semana':'fin de semana'} · desde el ${fmt(new Date(d.fecha_origen+'T00:00:00'))}</div></div>`;
+  }).join('') : '<div class="small-note">Sin deudas pendientes.</div>';
+}
+async function abrirSolicitudCambio(servicioId){
+  const div = document.getElementById('cambio-form-'+servicioId);
+  if(!div.classList.contains('hidden')){ div.classList.add('hidden'); return; }
+  const { data: roster } = await sb.from('personas').select('id,nombre,apellidos').eq('compania', CURRENT.persona.compania).order('apellidos');
+  const opciones = (roster||[]).filter(p=>p.id!==CURRENT.persona.id).map(p=>`<option value="${p.id}">${p.apellidos}, ${p.nombre}</option>`).join('');
+  div.innerHTML = `
+    <select id="sustituto-${servicioId}" style="width:100%;padding:8px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;margin-bottom:6px;">${opciones}</select>
+    <textarea id="motivo-${servicioId}" placeholder="Motivo (obligatorio)" style="width:100%;min-height:50px;padding:8px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;margin-bottom:6px;"></textarea>
+    <button class="small-btn" onclick="enviarSolicitudCambio(${servicioId})">Enviar solicitud</button>`;
+  div.classList.remove('hidden');
+}
+async function enviarSolicitudCambio(servicioId){
+  const sustituto = document.getElementById('sustituto-'+servicioId).value;
+  const motivo = document.getElementById('motivo-'+servicioId).value.trim();
+  if(!motivo){ showToast('El motivo es obligatorio.'); return; }
+  const { error } = await sb.from('cambios_servicio').insert({ servicio_id: servicioId, compania: CURRENT.persona.compania, solicitante_id: CURRENT.persona.id, sustituto_id: sustituto, motivo });
+  if(error){ showToast('No se pudo enviar: '+error.message); return; }
+  showToast('Solicitud enviada. El admin tiene que aprobarla.');
+  await renderAlumnoServicios();
+}
+
+/* ---- Admin ---- */
+function onServTipoChange(){
+  const tipo = document.getElementById('serv-tipo').value;
+  document.getElementById('serv-turno').classList.toggle('hidden', tipo!=='imaginaria');
+}
+async function asignarServicio(){
+  const fecha = document.getElementById('serv-fecha').value;
+  const tipo = document.getElementById('serv-tipo').value;
+  const turno = tipo==='imaginaria' ? parseInt(document.getElementById('serv-turno').value,10) : 0;
+  const persona_id = document.getElementById('serv-persona').value;
+  if(!fecha || !persona_id){ showToast('Elige fecha y persona.'); return; }
+  const { error } = await sb.from('servicios').upsert(
+    { compania: CURRENT.compania, fecha, tipo, turno, persona_id },
+    { onConflict: 'compania,fecha,tipo,turno' }
+  );
+  if(error){ showToast('No se pudo asignar: '+error.message); return; }
+  showToast('Servicio asignado.');
+  await renderAdminServicios();
+}
+async function eliminarServicio(id){
+  if(!confirm('¿Quitar este servicio del cuadrante?')) return;
+  const { error } = await sb.from('servicios').delete().eq('id', id);
+  if(error){ showToast('No se pudo quitar: '+error.message); return; }
+  await renderAdminServicios();
+}
+async function aprobarCambio(id){
+  const { error } = await sb.rpc('aprobar_cambio_servicio', { p_cambio_id: id });
+  if(error){ showToast('No se pudo aprobar: '+error.message); return; }
+  showToast('Cambio aprobado — el servicio ya está a nombre del sustituto y la deuda registrada.');
+  await renderAdminServicios();
+}
+async function rechazarCambio(id){
+  const motivo = prompt('Motivo del rechazo:');
+  if(motivo===null || motivo.trim()==='') return;
+  const { error } = await sb.from('cambios_servicio').update({ estado:'rechazado', motivo_resolucion:motivo, resuelto_en:new Date().toISOString() }).eq('id', id);
+  if(error){ showToast('No se pudo rechazar: '+error.message); return; }
+  showToast('Solicitud rechazada.');
+  await renderAdminServicios();
+}
+async function marcarDeudaSaldada(id){
+  const { error } = await sb.from('deudas_servicio').update({ saldada: true }).eq('id', id);
+  if(error){ showToast('No se pudo actualizar: '+error.message); return; }
+  await renderAdminServicios();
+}
+async function exportServiciosExcel(){
+  const c = CURRENT.compania;
+  const week = SERV_WEEKS[servWeekIndex];
+  const diasLaborables = week.days.slice(0,5); // lunes a viernes
+  const desde = ymd(diasLaborables[0]), hasta = ymd(diasLaborables[4]);
+  const { data: servicios } = await sb.from('servicios')
+    .select('*, personas(nombre,apellidos,seccion)')
+    .eq('compania', c).gte('fecha', desde).lte('fecha', hasta)
+    .order('fecha').order('tipo').order('turno');
+  const header = ['Día', 'Sección', 'Nombre y apellidos', 'Servicio'];
+  const rows = [header];
+  (servicios||[]).forEach(s=>{
+    const dIdx = diasLaborables.findIndex(d=>ymd(d)===s.fecha);
+    const diaTxt = dIdx>=0 ? `${SERV_DAY_NAMES[dIdx]} ${fmt(diasLaborables[dIdx])}` : s.fecha;
+    rows.push([diaTxt, `${c}${s.personas.seccion}`, `${s.personas.apellidos}, ${s.personas.nombre}`, servicioLabel(s)]);
+  });
+  if(rows.length===1) rows.push(['—','—','Sin servicios asignados esta semana','']);
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{wch:16},{wch:10},{wch:28},{wch:26}];
+  xlsxHeaderOnly(ws, header.length);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Semana '+fmt(diasLaborables[0]).replace('/','-'));
+  const filename = `PortalAGM_Servicios_${c}Cia_${fmt(diasLaborables[0]).replace('/','-')}_a_${fmt(diasLaborables[4]).replace('/','-')}.xlsx`;
+  XLSX.writeFile(wb, filename);
+}
+let servVistaMode = 'semana';
+function onServVistaChange(){
+  servVistaMode = document.getElementById('serv-vista').value;
+  document.getElementById('serv-vista-persona').classList.toggle('hidden', servVistaMode!=='persona');
+  renderAdminServicios();
+}
+async function renderAdminServicios(){
+  document.getElementById('admin-week-select').innerHTML = '';
+  document.getElementById('admin-notice').innerHTML = '';
+  const c = CURRENT.compania;
+  const { data: ci } = await sb.from('companias').select('servicios_visible_alumnos').eq('numero', c).single();
+  document.getElementById('serv-visible-toggle').checked = !!(ci && ci.servicios_visible_alumnos);
+
+  document.getElementById('admin-serv-week-select').innerHTML = servVistaMode==='semana' ? servWeekSelectHtml() : '';
+  const week = SERV_WEEKS[servWeekIndex];
+
+  const { data: roster } = await sb.from('personas').select('id,nombre,apellidos,seccion').eq('compania', c).order('apellidos');
+  document.getElementById('serv-persona').innerHTML = (roster||[]).map(p=>`<option value="${p.id}">${p.apellidos}, ${p.nombre} (${c}${p.seccion})</option>`).join('');
+  document.getElementById('serv-fecha').innerHTML = week.days.map((d,i)=>`<option value="${ymd(d)}">${SERV_DAY_NAMES[i]} ${fmt(d)}</option>`).join('');
+  onServTipoChange();
+  const selPersonaVista = document.getElementById('serv-vista-persona');
+  if(!selPersonaVista.dataset.filled){
+    selPersonaVista.innerHTML = (roster||[]).map(p=>`<option value="${p.id}">${p.apellidos}, ${p.nombre} (${c}${p.seccion})</option>`).join('');
+    selPersonaVista.dataset.filled = '1';
+  }
+
+  const SERV_SHORT = { cuartelero:'C', imaginaria:'I', imaginaria_cuartelero:'IC', imaginaria_imaginaria:'II' };
+  const tablaEl = document.getElementById('admin-servicios-tabla');
+  const leyendaEl = document.getElementById('admin-servicios-leyenda');
+
+  if(servVistaMode==='semana'){
+    leyendaEl.innerHTML = `
+      <div class="fixed-pill"><span class="pernocta-badge agm">C</span> Cuartelero</div>
+      <div class="fixed-pill"><span class="pernocta-badge agm">I1-I4</span> Imaginaria, turno 1 a 4</div>
+      <div class="fixed-pill"><span class="pernocta-badge agm">IC</span> Imaginaria de Cuartelero</div>
+      <div class="fixed-pill"><span class="pernocta-badge agm">II</span> Imaginaria de Imaginaria</div>
+      <div class="fixed-pill">Toca cualquier código para quitarlo</div>`;
+    const desde = ymd(week.days[0]), hasta = ymd(week.days[6]);
+    const { data: servicios } = await sb.from('servicios')
+      .select('*, personas(nombre,apellidos,seccion)')
+      .eq('compania', c).gte('fecha', desde).lte('fecha', hasta)
+      .order('fecha').order('tipo').order('turno');
+    const porPersonaDia = {};
+    (servicios||[]).forEach(s=>{
+      const k = s.persona_id+'|'+s.fecha;
+      (porPersonaDia[k] = porPersonaDia[k] || []).push(s);
+    });
+    let thead = '<thead><tr class="daynames"><th class="name-cell">Sección '+c+'ª</th>';
+    week.days.forEach((d,i)=> thead += `<th>${SERV_DAY_NAMES[i].slice(0,3)}<span class="colhead-sub">${fmt(d)}</span></th>`);
+    thead += '</tr></thead>';
+    const conServicioEsaSemana = (roster||[]).filter(p=> week.days.some(d=> (porPersonaDia[p.id+'|'+ymd(d)]||[]).length>0));
+    let tbody = '<tbody>';
+    conServicioEsaSemana.forEach(p=>{
+      tbody += `<tr><td class="name-cell">${p.apellidos}, ${p.nombre} <span style="color:var(--ink-soft);">(${c}${p.seccion})</span></td>`;
+      week.days.forEach(d=>{
+        const k = p.id+'|'+ymd(d);
+        const asignados = porPersonaDia[k] || [];
+        if(asignados.length===0){ tbody += '<td></td>'; }
+        else {
+          tbody += '<td>' + asignados.map(s=>`<span class="pernocta-badge agm" style="cursor:pointer;" title="${servicioLabel(s)} — click para quitar" onclick="eliminarServicio(${s.id})">${SERV_SHORT[s.tipo]}${s.tipo==='imaginaria'?s.turno:''}</span>`).join(' ') + '</td>';
+        }
+      });
+      tbody += '</tr>';
+    });
+    tbody += '</tbody>';
+    tablaEl.innerHTML = conServicioEsaSemana.length ? (thead + tbody) : '<div class="small-note">Nadie tiene servicio asignado esta semana.</div>';
+
+  } else if(servVistaMode==='todos'){
+    leyendaEl.innerHTML = '';
+    const todayStr = ymd(new Date());
+    const { data: servicios } = await sb.from('servicios')
+      .select('*, personas(nombre,apellidos,seccion)')
+      .eq('compania', c).gte('fecha', todayStr)
+      .order('fecha').order('tipo').order('turno');
+    let thead = '<thead><tr class="daynames"><th>Fecha</th><th>Sección</th><th class="name-cell">Nombre</th><th>Servicio</th></tr></thead>';
+    let tbody = '<tbody>';
+    (servicios||[]).forEach(s=>{
+      tbody += `<tr><td class="mono">${fmtFecha(s.fecha)}</td><td class="mono">${c}${s.personas.seccion}</td><td class="name-cell">${s.personas.apellidos}, ${s.personas.nombre}</td><td>${servicioLabel(s)} <button class="small-btn danger" style="padding:2px 8px;margin-left:4px;" onclick="eliminarServicio(${s.id})">Quitar</button></td></tr>`;
+    });
+    tbody += '</tbody>';
+    tablaEl.innerHTML = (servicios&&servicios.length) ? (thead+tbody) : '<div class="small-note">Sin servicios próximos.</div>';
+
+  } else if(servVistaMode==='persona'){
+    leyendaEl.innerHTML = '';
+    const personaId = selPersonaVista.value;
+    if(!personaId){ tablaEl.innerHTML = ''; }
+    else {
+      const { data: servicios } = await sb.from('servicios').select('*')
+        .eq('compania', c).eq('persona_id', personaId)
+        .order('fecha').order('tipo').order('turno');
+      let thead = '<thead><tr class="daynames"><th>Fecha</th><th>Servicio</th></tr></thead>';
+      let tbody = '<tbody>';
+      (servicios||[]).forEach(s=>{
+        tbody += `<tr><td class="mono">${fmtFecha(s.fecha)}</td><td>${servicioLabel(s)} <button class="small-btn danger" style="padding:2px 8px;margin-left:4px;" onclick="eliminarServicio(${s.id})">Quitar</button></td></tr>`;
+      });
+      tbody += '</tbody>';
+      tablaEl.innerHTML = (servicios&&servicios.length) ? (thead+tbody) : '<div class="small-note">Esta persona no tiene ningún servicio (ni pasado ni futuro).</div>';
+    }
+  }
+
+  const { data: pendientes } = await sb.from('cambios_servicio')
+    .select('*, servicios(fecha,tipo,turno), solicitante:personas!cambios_servicio_solicitante_id_fkey(nombre,apellidos), sustituto:personas!cambios_servicio_sustituto_id_fkey(nombre,apellidos)')
+    .eq('compania', c).eq('estado','pendiente').order('creado_en');
+  document.getElementById('admin-cambios-pendientes').innerHTML = (pendientes&&pendientes.length) ? pendientes.map(p=>`
+    <div class="servicio-card">
+      <div class="titulo">${p.servicios?servicioLabel(p.servicios):'(servicio eliminado)'} ${p.servicios?'— '+fmtFecha(p.servicios.fecha):''}</div>
+      <div class="meta">${p.solicitante.apellidos}, ${p.solicitante.nombre} → ${p.sustituto.apellidos}, ${p.sustituto.nombre}</div>
+      <div class="meta">Motivo: ${p.motivo}</div>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <button class="small-btn" onclick="aprobarCambio(${p.id})">✅ Aprobar</button>
+        <button class="small-btn danger" onclick="rechazarCambio(${p.id})">❌ Rechazar</button>
+      </div>
+    </div>`).join('') : '<div class="small-note">Sin solicitudes pendientes.</div>';
+
+  const { data: deudas } = await sb.from('deudas_servicio')
+    .select('*, deudor:personas!deudas_servicio_deudor_id_fkey(nombre,apellidos), acreedor:personas!deudas_servicio_acreedor_id_fkey(nombre,apellidos)')
+    .eq('compania', c).eq('saldada', false).order('creado_en',{ascending:false});
+  document.getElementById('admin-deudas-lista').innerHTML = (deudas&&deudas.length) ? deudas.map(d=>`
+    <div class="servicio-card">
+      <div class="titulo">${d.deudor.apellidos}, ${d.deudor.nombre} le debe a ${d.acreedor.apellidos}, ${d.acreedor.nombre}</div>
+      <div class="meta">${TIPO_LABEL[d.tipo]||d.tipo}${d.turno?' (turno '+d.turno+')':''} · ${d.entre_semana?'entre semana':'fin de semana'} · desde el ${fmt(new Date(d.fecha_origen+'T00:00:00'))}</div>
+      <button class="small-btn" style="margin-top:6px;" onclick="marcarDeudaSaldada(${d.id})">Marcar saldada</button>
+    </div>`).join('') : '<div class="small-note">Sin deudas pendientes.</div>';
+}
+</script>
+</body>
+</html>
