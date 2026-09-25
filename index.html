@@ -283,6 +283,9 @@ body.mod-servicios h3.section-title{border-bottom-color:var(--brass);}
 
     <div id="alumno-comidas-mod">
       <div id="alumno-confirm"></div>
+      <h3 class="section-title">Mirar solo un día</h3>
+      <div id="alumno-dia-selector" class="fixed-row" style="margin-bottom:8px;"></div>
+      <div id="alumno-dia-resumen" style="margin-bottom:18px;"></div>
       <div class="fixed-row">
         <div class="fixed-pill">🔒 Las casillas ya marcadas y bloqueadas son <b>obligatorias</b> — no hace falta tocarlas</div>
         <div class="fixed-pill">✏️ Solo puedes marcar/desmarcar <b>tu cena</b> de cada día, tu <b>comida de viernes, sábado y domingo</b> y tu <b>desayuno del domingo</b></div>
@@ -293,6 +296,8 @@ body.mod-servicios h3.section-title{border-bottom-color:var(--brass);}
       <div class="table-scroll" id="alumno-table-scroll"><table class="roster" id="alumno-table"></table></div>
       <h3 class="section-title" style="margin-top:18px;">Próximas comidas</h3>
       <div class="summary-grid" id="alumno-summary"></div>
+      <p class="small-note">👆 Toca una de las tarjetas de arriba para ver quién de tu sección tiene esa comida.</p>
+      <div id="alumno-summary-quienes"></div>
       <p class="small-note">Puedes ver el detalle de tu sección para tener control, pero solo puedes marcar tu propia fila.</p>
     </div>
 
@@ -363,7 +368,24 @@ body.mod-servicios h3.section-title{border-bottom-color:var(--brass);}
           <label class="switch"><input type="checkbox" id="serv-visible-toggle" onchange="toggleServiciosVisible(this.checked)"><span class="track"></span><span class="thumb"></span></label>
         </div>
       </div>
+      <div class="fixed-row" style="margin-bottom:10px;">
+        <button class="small-btn" id="serv-view-lista25" onclick="setServView('lista25')">📋 Ver lista de 25</button>
+        <button class="small-btn" id="serv-view-hoy" onclick="setServView('hoy')">📅 Ver servicios de hoy</button>
+        <button class="small-btn" id="serv-view-semana" onclick="setServView('semana')">🗓️ Ver servicios de esta semana</button>
+      </div>
       <div id="admin-serv-week-select"></div>
+      <div class="admin-panel">
+        <div class="panel-row" style="flex-wrap:wrap;">
+          <div class="switch-label">Mostrar
+            <span class="sub2">Las imaginarias (de noche) o el cuartelero / imaginaria de cuartelero (de día)</span>
+          </div>
+          <select id="serv-familia" onchange="onServFamiliaChange()" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;">
+            <option value="ambos">Todo</option>
+            <option value="imaginarias">Solo imaginarias (noche)</option>
+            <option value="dia">Solo Cuartelero / Imaginaria de Cuartelero (día)</option>
+          </select>
+        </div>
+      </div>
       <div class="admin-panel">
         <div class="panel-row">
           <div class="switch-label">Exportar la semana a Excel<span class="sub2">Lunes a viernes de la semana seleccionada arriba, con el servicio concreto de cada uno</span></div>
@@ -426,6 +448,14 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const COMPANIES = [11,12,13,6,7];
 const SECTIONS_PER_COMPANY = 4;
 const DAY_NAMES = ["Vie","Sáb","Dom","Lun","Mar","Mié","Jue"];
+const DAY_NAMES_FULL = ["viernes","sábado","domingo","lunes","martes","miércoles","jueves"];
+let selectedDiaComida = null;
+function diaDeHoyEnSemana(week){
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  if(hoy < week.days[0] || hoy > week.days[6]) return null;
+  return (hoy.getDay() + 2) % 7; // 0=Vie..6=Jue
+}
+function setDiaComida(i){ selectedDiaComida = i; renderAlumno(); }
 
 /* ================= Weeks (calculadas en cliente, no en BD) ================= */
 function fmt(d){ return d.toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit'}); }
@@ -835,7 +865,7 @@ async function enterAlumno(persona, adminCompania){
   await setModule('comidas');
 }
 function switchToAdmin(){ enterAdmin(CURRENT.adminCompania, CURRENT.persona); }
-async function onAlumnoWeekChange(v){ setActiveWeek(parseInt(v,10)); await (currentModule==='pernoctas' ? renderAlumnoPernoctas() : renderAlumno()); }
+async function onAlumnoWeekChange(v){ setActiveWeek(parseInt(v,10)); selectedDiaComida = null; await (currentModule==='pernoctas' ? renderAlumnoPernoctas() : renderAlumno()); }
 
 async function renderAlumno(){
   const { persona, seccionPeople } = CURRENT;
@@ -901,12 +931,20 @@ async function renderAlumno(){
   table.innerHTML = thead+tbody+tfoot;
 
   const nextCenaCol = cols.find(c=>c.type==='cena');
-  const cenaSeccion = seccionPeople.filter(p=>getVal(p.id,nextCenaCol,apuntesMap)).length;
+  const cenaQuienes = seccionPeople.filter(p=>getVal(p.id,nextCenaCol,apuntesMap));
   const nextComidaOpcional = cols.find(c=>c.type==='comida' && !c.obligatorio);
-  const comidaSeccion = seccionPeople.filter(p=>getVal(p.id,nextComidaOpcional,apuntesMap)).length;
+  const comidaQuienes = seccionPeople.filter(p=>getVal(p.id,nextComidaOpcional,apuntesMap));
+  const listaNombres = arr => arr.length ? arr.map(p=>p.apellidos+', '+p.nombre).join('<br>') : 'Nadie de tu sección tiene esta comida.';
   document.getElementById('alumno-summary').innerHTML = `
-    <div class="stat-card"><div class="num">${comidaSeccion}/${seccionPeople.length}</div><div class="lbl">Comida ${DAY_NAMES[nextComidaOpcional.day]} — tu sección</div></div>
-    <div class="stat-card"><div class="num">${cenaSeccion}/${seccionPeople.length}</div><div class="lbl">Cena ${DAY_NAMES[nextCenaCol.day]} — tu sección</div></div>`;
+    <div class="stat-card" style="cursor:pointer;" onclick="document.getElementById('quienes-comida').classList.toggle('hidden')">
+      <div class="num">${comidaQuienes.length}/${seccionPeople.length}</div><div class="lbl">Comida ${DAY_NAMES[nextComidaOpcional.day]} — tu sección<br><span style="text-decoration:underline;">toca para ver quién</span></div>
+    </div>
+    <div class="stat-card" style="cursor:pointer;" onclick="document.getElementById('quienes-cena').classList.toggle('hidden')">
+      <div class="num">${cenaQuienes.length}/${seccionPeople.length}</div><div class="lbl">Cena ${DAY_NAMES[nextCenaCol.day]} — tu sección<br><span style="text-decoration:underline;">toca para ver quién</span></div>
+    </div>`;
+  document.getElementById('alumno-summary-quienes').innerHTML = `
+    <div id="quienes-comida" class="servicio-card hidden"><div class="titulo">Comida ${DAY_NAMES[nextComidaOpcional.day]} — quién de tu sección</div><div class="meta">${listaNombres(comidaQuienes)}</div></div>
+    <div id="quienes-cena" class="servicio-card hidden"><div class="titulo">Cena ${DAY_NAMES[nextCenaCol.day]} — quién de tu sección</div><div class="meta">${listaNombres(cenaQuienes)}</div></div>`;
 
   const { data: confRow } = await sb.from('confirmaciones').select('confirmado,confirmado_en').eq('persona_id', persona.id).eq('semana_inicio', ACTIVE_WEEK.key).maybeSingle();
   const confirmado = !!(confRow && confRow.confirmado);
@@ -918,6 +956,27 @@ async function renderAlumno(){
         ? `He revisado esta semana y son las comidas que quiero.<span class="ts">Confirmado el ${confTs}</span>`
         : `⚠️ NO HAS CONFIRMADO TUS COMIDAS DE ESTA SEMANA<span class="ts">Revisa la tabla y marca aquí cuando esté correcta</span>`}</label>
     </div>`;
+
+  if(selectedDiaComida===null) selectedDiaComida = diaDeHoyEnSemana(ACTIVE_WEEK); if(selectedDiaComida===null) selectedDiaComida = 0;
+  document.getElementById('alumno-dia-selector').innerHTML = DAY_NAMES.map((dn,i)=>
+    `<button class="small-btn${i===selectedDiaComida?' active':''}" onclick="setDiaComida(${i})">${dn} ${fmt(ACTIVE_WEEK.days[i])}</button>`
+  ).join('');
+  const colsDelDia = cols.filter(c=>c.day===selectedDiaComida);
+  const tienen = colsDelDia.filter(c=>getVal(persona.id,c,apuntesMap)).map(c=>c.type);
+  const noTienen = colsDelDia.filter(c=>!getVal(persona.id,c,apuntesMap)).map(c=>c.type);
+  const nombreComida = t => t==='desayuno'?'desayuno':t==='comida'?'comida':'cena';
+  const listar = arr => arr.length<=1 ? (arr.map(nombreComida)[0]||'') : arr.slice(0,-1).map(nombreComida).join(', ')+' y '+nombreComida(arr[arr.length-1]);
+  const esHoy = diaDeHoyEnSemana(ACTIVE_WEEK)===selectedDiaComida;
+  const diaPalabra = esHoy ? 'Hoy' : DAY_NAMES_FULL[selectedDiaComida].charAt(0).toUpperCase()+DAY_NAMES_FULL[selectedDiaComida].slice(1);
+  let frase;
+  if(noTienen.length===0) frase = `${diaPalabra} tienes ${listar(tienen)}.`;
+  else if(tienen.length===0) frase = `${diaPalabra} no tienes ninguna comida marcada.`;
+  else frase = `${diaPalabra} no tienes ${listar(noTienen)}, solo tienes ${listar(tienen)}.`;
+  document.getElementById('alumno-dia-resumen').innerHTML = `
+    <div class="servicio-card">
+      <div class="titulo">${frase}</div>
+    </div>
+    ${!confirmado ? `<div class="notice closed" style="margin-top:8px;"><span>⚠️ No has confirmado esta semana todavía — lo de arriba podría cambiar hasta que confirmes</span></div>` : ''}`;
 
   const nowIso = new Date().toISOString();
   const { data: avisos } = await sb.from('avisos').select('*')
@@ -2268,7 +2327,11 @@ async function exportServiciosExcel(){
 }
 let servPage = 0;
 const SERV_PAGE_SIZE = 25;
+let servFamilia = 'ambos';
+let servView = 'lista25';
 function servCambiarPagina(p){ servPage = p; renderAdminServicios(); }
+function onServFamiliaChange(){ servFamilia = document.getElementById('serv-familia').value; renderAdminServicios(); }
+function setServView(v){ servView = v; renderAdminServicios(); }
 async function renderAdminServicios(){
   document.getElementById('admin-week-select').innerHTML = '';
   document.getElementById('admin-notice').innerHTML = '';
@@ -2276,7 +2339,9 @@ async function renderAdminServicios(){
   const { data: ci } = await sb.from('companias').select('servicios_visible_alumnos').eq('numero', c).single();
   document.getElementById('serv-visible-toggle').checked = !!(ci && ci.servicios_visible_alumnos);
 
-  document.getElementById('admin-serv-week-select').innerHTML = servWeekSelectHtml();
+  ['lista25','hoy','semana'].forEach(v=> document.getElementById('serv-view-'+v).classList.toggle('active', servView===v));
+  document.getElementById('admin-serv-week-select').innerHTML = servView==='hoy' ? '' : servWeekSelectHtml();
+  document.getElementById('admin-servicios-paginacion').innerHTML = '';
   const week = SERV_WEEKS[servWeekIndex];
 
   const { data: roster } = await sb.from('personas').select('id,nombre,apellidos,seccion').eq('compania', c).order('apellidos');
@@ -2288,56 +2353,98 @@ async function renderAdminServicios(){
   const SERV_SHORT = { cuartelero:'C', imaginaria:'I', imaginaria_cuartelero:'IC', imaginaria_imaginaria:'II' };
   const tablaEl = document.getElementById('admin-servicios-tabla');
   const leyendaEl = document.getElementById('admin-servicios-leyenda');
-  leyendaEl.innerHTML = `
-    <div class="fixed-pill"><span class="pernocta-badge agm">C</span> Cuartelero</div>
-    <div class="fixed-pill"><span class="pernocta-badge agm">I1-I4</span> Imaginaria, turno 1 a 4</div>
-    <div class="fixed-pill"><span class="pernocta-badge agm">IC</span> Imaginaria de Cuartelero</div>
-    <div class="fixed-pill"><span class="pernocta-badge agm">II</span> Imaginaria de Imaginaria</div>
-    <div class="fixed-pill">Toca cualquier código para sustituir, la ✕ para quitar sin más</div>`;
+  const leyendaBits = [];
+  if(servFamilia!=='imaginarias') leyendaBits.push('<div class="fixed-pill"><span class="pernocta-badge agm">C</span> Cuartelero</div>', '<div class="fixed-pill"><span class="pernocta-badge agm">IC</span> Imaginaria de Cuartelero</div>');
+  if(servFamilia!=='dia') leyendaBits.push('<div class="fixed-pill"><span class="pernocta-badge agm">I1-I4</span> Imaginaria, turno 1 a 4</div>', '<div class="fixed-pill"><span class="pernocta-badge agm">II</span> Imaginaria de Imaginaria</div>');
+  leyendaBits.push('<div class="fixed-pill">Toca cualquier código para sustituir, la ✕ para quitar sin más</div>');
+  leyendaEl.innerHTML = leyendaBits.join('');
 
-  const desde = ymd(week.days[0]), hasta = ymd(week.days[6]);
-  const { data: servicios } = await sb.from('servicios')
-    .select('*, personas(nombre,apellidos,seccion)')
-    .eq('compania', c).gte('fecha', desde).lte('fecha', hasta)
-    .order('fecha').order('tipo').order('turno');
-  const porPersonaDia = {};
-  (servicios||[]).forEach(s=>{
-    const k = s.persona_id+'|'+s.fecha;
-    (porPersonaDia[k] = porPersonaDia[k] || []).push(s);
-  });
+  const tiposDia = ['cuartelero','imaginaria_cuartelero'];
+  const tiposNoche = ['imaginaria','imaginaria_imaginaria'];
+  const tiposMostrar = servFamilia==='dia' ? tiposDia : servFamilia==='imaginarias' ? tiposNoche : [...tiposDia, ...tiposNoche];
+  const badgeHtml = s => `<span class="pernocta-badge agm" style="cursor:pointer;" title="${servicioLabel(s)} — click para sustituir" onclick="prellenarSustitucion('${s.fecha}','${s.tipo}',${s.turno})">${SERV_SHORT[s.tipo]}${s.tipo==='imaginaria'?s.turno:''}</span><span style="cursor:pointer;color:var(--danger);font-weight:700;margin-left:2px;" title="Quitar sin sustituir" onclick="eliminarServicio(${s.id})">✕</span>`;
 
-  // paginación fija de 25 en 25, sobre las 113 seguidas (orden alfabético, como el Excel)
-  const totalPersonas = (roster||[]).length;
-  const totalPaginas = Math.max(1, Math.ceil(totalPersonas / SERV_PAGE_SIZE));
-  if(servPage >= totalPaginas) servPage = totalPaginas - 1;
-  if(servPage < 0) servPage = 0;
-  let pagHtml = '';
-  for(let pg=0; pg<totalPaginas; pg++){
-    const desdeN = pg*SERV_PAGE_SIZE+1, hastaN = Math.min((pg+1)*SERV_PAGE_SIZE, totalPersonas);
-    pagHtml += `<button class="small-btn${pg===servPage?' active':''}" onclick="servCambiarPagina(${pg})">${desdeN}–${hastaN}</button>`;
-  }
-  document.getElementById('admin-servicios-paginacion').innerHTML = pagHtml;
-
-  const pagina = (roster||[]).slice(servPage*SERV_PAGE_SIZE, servPage*SERV_PAGE_SIZE + SERV_PAGE_SIZE);
-
-  let thead = '<thead><tr class="daynames"><th class="name-cell">'+c+'ª Compañía — las 113</th>';
-  week.days.forEach((d,i)=> thead += `<th>${SERV_DAY_NAMES[i].slice(0,3)}<span class="colhead-sub">${fmt(d)}</span></th>`);
-  thead += '</tr></thead>';
-  let tbody = '<tbody>';
-  pagina.forEach(p=>{
-    tbody += `<tr><td class="name-cell">${p.apellidos}, ${p.nombre} <span style="color:var(--ink-soft);">(${c}${p.seccion})</span></td>`;
-    week.days.forEach(d=>{
-      const k = p.id+'|'+ymd(d);
-      const asignados = porPersonaDia[k] || [];
-      if(asignados.length===0){ tbody += '<td></td>'; }
-      else {
-        tbody += '<td>' + asignados.map(s=>`<span class="pernocta-badge agm" style="cursor:pointer;" title="${servicioLabel(s)} — click para sustituir" onclick="prellenarSustitucion('${s.fecha}','${s.tipo}',${s.turno})">${SERV_SHORT[s.tipo]}${s.tipo==='imaginaria'?s.turno:''}</span><span style="cursor:pointer;color:var(--danger);font-weight:700;margin-left:2px;" title="Quitar sin sustituir" onclick="eliminarServicio(${s.id})">✕</span>`).join(' ') + '</td>';
-      }
+  if(servView==='hoy'){
+    const hoy = ymd(new Date());
+    const { data: servicios } = await sb.from('servicios')
+      .select('*, personas(nombre,apellidos,seccion)')
+      .eq('compania', c).eq('fecha', hoy).in('tipo', tiposMostrar)
+      .order('tipo').order('turno');
+    let thead = `<thead><tr class="daynames"><th class="name-cell">Hoy — ${fmtFecha(hoy)}</th><th>Servicio</th></tr></thead>`;
+    let tbody = '<tbody>';
+    (servicios||[]).forEach(s=>{
+      tbody += `<tr><td class="name-cell">${s.personas.apellidos}, ${s.personas.nombre} <span style="color:var(--ink-soft);">(${c}${s.personas.seccion})</span></td><td>${badgeHtml(s)}</td></tr>`;
     });
-    tbody += '</tr>';
-  });
-  tbody += '</tbody>';
-  tablaEl.innerHTML = thead + tbody;
+    tbody += '</tbody>';
+    tablaEl.innerHTML = (servicios&&servicios.length) ? (thead+tbody) : '<div class="small-note">Nadie tiene servicio hoy.</div>';
+
+  } else if(servView==='semana'){
+    const desde = ymd(week.days[0]), hasta = ymd(week.days[6]);
+    const { data: servicios } = await sb.from('servicios')
+      .select('*, personas(nombre,apellidos,seccion)')
+      .eq('compania', c).gte('fecha', desde).lte('fecha', hasta).in('tipo', tiposMostrar)
+      .order('fecha').order('tipo').order('turno');
+    const porPersonaDia = {};
+    (servicios||[]).forEach(s=>{
+      const k = s.persona_id+'|'+s.fecha;
+      (porPersonaDia[k] = porPersonaDia[k] || []).push(s);
+    });
+    const conServicio = (roster||[]).filter(p=> week.days.some(d=> (porPersonaDia[p.id+'|'+ymd(d)]||[]).length>0));
+    let thead = '<thead><tr class="daynames"><th class="name-cell">Con servicio esta semana</th>';
+    week.days.forEach((d,i)=> thead += `<th>${SERV_DAY_NAMES[i].slice(0,3)}<span class="colhead-sub">${fmt(d)}</span></th>`);
+    thead += '</tr></thead>';
+    let tbody = '<tbody>';
+    conServicio.forEach(p=>{
+      tbody += `<tr><td class="name-cell">${p.apellidos}, ${p.nombre} <span style="color:var(--ink-soft);">(${c}${p.seccion})</span></td>`;
+      week.days.forEach(d=>{
+        const asignados = porPersonaDia[p.id+'|'+ymd(d)] || [];
+        tbody += asignados.length ? ('<td>'+asignados.map(badgeHtml).join(' ')+'</td>') : '<td></td>';
+      });
+      tbody += '</tr>';
+    });
+    tbody += '</tbody>';
+    tablaEl.innerHTML = conServicio.length ? (thead+tbody) : '<div class="small-note">Nadie tiene servicio asignado esta semana.</div>';
+
+  } else {
+    // lista25: las 113 seguidas, paginadas
+    const desde = ymd(week.days[0]), hasta = ymd(week.days[6]);
+    const { data: servicios } = await sb.from('servicios')
+      .select('*, personas(nombre,apellidos,seccion)')
+      .eq('compania', c).gte('fecha', desde).lte('fecha', hasta).in('tipo', tiposMostrar)
+      .order('fecha').order('tipo').order('turno');
+    const porPersonaDia = {};
+    (servicios||[]).forEach(s=>{
+      const k = s.persona_id+'|'+s.fecha;
+      (porPersonaDia[k] = porPersonaDia[k] || []).push(s);
+    });
+
+    const totalPersonas = (roster||[]).length;
+    const totalPaginas = Math.max(1, Math.ceil(totalPersonas / SERV_PAGE_SIZE));
+    if(servPage >= totalPaginas) servPage = totalPaginas - 1;
+    if(servPage < 0) servPage = 0;
+    let pagHtml = '';
+    for(let pg=0; pg<totalPaginas; pg++){
+      const desdeN = pg*SERV_PAGE_SIZE+1, hastaN = Math.min((pg+1)*SERV_PAGE_SIZE, totalPersonas);
+      pagHtml += `<button class="small-btn${pg===servPage?' active':''}" onclick="servCambiarPagina(${pg})">${desdeN}–${hastaN}</button>`;
+    }
+    document.getElementById('admin-servicios-paginacion').innerHTML = pagHtml;
+
+    const pagina = (roster||[]).slice(servPage*SERV_PAGE_SIZE, servPage*SERV_PAGE_SIZE + SERV_PAGE_SIZE);
+    let thead = '<thead><tr class="daynames"><th class="name-cell">'+c+'ª Compañía — las 113</th>';
+    week.days.forEach((d,i)=> thead += `<th>${SERV_DAY_NAMES[i].slice(0,3)}<span class="colhead-sub">${fmt(d)}</span></th>`);
+    thead += '</tr></thead>';
+    let tbody = '<tbody>';
+    pagina.forEach(p=>{
+      tbody += `<tr><td class="name-cell">${p.apellidos}, ${p.nombre} <span style="color:var(--ink-soft);">(${c}${p.seccion})</span></td>`;
+      week.days.forEach(d=>{
+        const asignados = porPersonaDia[p.id+'|'+ymd(d)] || [];
+        tbody += asignados.length ? ('<td>'+asignados.map(badgeHtml).join(' ')+'</td>') : '<td></td>';
+      });
+      tbody += '</tr>';
+    });
+    tbody += '</tbody>';
+    tablaEl.innerHTML = thead + tbody;
+  }
 
   const { data: pendientes } = await sb.from('cambios_servicio')
     .select('*, servicios(fecha,tipo,turno), solicitante:personas!cambios_servicio_solicitante_id_fkey(nombre,apellidos), sustituto:personas!cambios_servicio_sustituto_id_fkey(nombre,apellidos)')
