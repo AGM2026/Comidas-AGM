@@ -393,8 +393,18 @@ body.mod-servicios h3.section-title{border-bottom-color:var(--brass);}
           <button class="primary-btn" style="width:auto;padding:10px 16px;" onclick="exportServiciosExcel()">📄 Exportar a Excel</button>
         </div>
       </div>
+      <div class="admin-panel" style="flex-direction:column;align-items:stretch;border-color:var(--brass);">
+        <div class="switch-label">📤 Subir el Excel de servicios
+          <span class="sub2">El mismo Excel de siempre ("GUARDIAS DE ORDEN"), tal cual — la app lee lo que haya y lo mete en el cuadrante, sin tocar nada de lo que ya había</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center;">
+          <input type="file" id="serv-excel-file" accept=".xlsx,.xls">
+          <button class="primary-btn" style="width:auto;padding:10px 16px;" onclick="importarExcelServicios()">Importar</button>
+        </div>
+        <div id="serv-excel-resultado" style="margin-top:8px;"></div>
+      </div>
       <div class="admin-panel" style="flex-direction:column;align-items:stretch;">
-        <div class="switch-label">Asignar un servicio
+        <div class="switch-label">Asignar un servicio (manual, suelto)
           <span class="sub2">Compañía entera, en orden de la Z a la A (de abajo hacia arriba, como se turnan) — elige día (de la semana de arriba), tipo y persona</span>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
@@ -1162,8 +1172,12 @@ async function renderAdmin(){
         </label>
         <textarea id="aviso-mensaje" placeholder="Escribe el aviso..." style="margin-top:8px;width:100%;min-height:60px;padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;"></textarea>
         <button class="primary-btn" style="width:auto;margin-top:8px;align-self:flex-start;padding:10px 16px;" onclick="sendAviso()">📢 Enviar aviso</button>
-        <div style="margin-top:12px;"><button class="small-btn" onclick="toggleAvisosIndividuales()">${avisosIndividualesOpen?'Cerrar':'Ver'} avisos individuales y respuestas</button></div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="small-btn" onclick="toggleAvisosIndividuales()">${avisosIndividualesOpen?'Cerrar':'Ver'} avisos individuales y respuestas</button>
+          <button class="small-btn" onclick="toggleAvisosGenerales()">${avisosGeneralesOpen?'Cerrar':'Ver'} avisos a toda la compañía / sección (borrar)</button>
+        </div>
         <div id="avisos-individuales-panel">${avisosIndividualesOpen ? await avisosIndividualesHtml(c) : ''}</div>
+        <div id="avisos-generales-panel">${avisosGeneralesOpen ? await avisosGeneralesHtml(c) : ''}</div>
       </div>
     </div>`;
 
@@ -1276,6 +1290,27 @@ async function confirmarTodosPernocta(){
 }
 let avisosIndividualesOpen = false;
 function toggleAvisosIndividuales(){ avisosIndividualesOpen = !avisosIndividualesOpen; renderAdmin(); }
+let avisosGeneralesOpen = false;
+function toggleAvisosGenerales(){ avisosGeneralesOpen = !avisosGeneralesOpen; renderAdmin(); }
+async function avisosGeneralesHtml(c){
+  const { data, error } = await sb.from('avisos').select('*')
+    .eq('compania', c).is('persona_id', null)
+    .order('created_at',{ascending:false}).limit(30);
+  if(error || !data || data.length===0) return `<div style="font-size:.8rem;color:var(--ink-soft);margin-top:8px;">Sin avisos generales todavía.</div>`;
+  return '<div style="margin-top:8px;">' + data.map(a=>{
+    const ts = new Date(a.created_at).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const destino = a.seccion ? `Sección ${c}${a.seccion}` : 'Toda la compañía';
+    return `<div class="history-row"><span class="ts">${ts}</span> — <b>${destino}</b>: ${a.mensaje} <span class="ts">(${a.creado_por})</span>
+      <button class="small-btn danger" style="margin-left:8px;padding:2px 8px;" onclick="deleteAvisoAdmin(${a.id})">Borrar para todos</button></div>`;
+  }).join('') + '</div>';
+}
+async function deleteAvisoAdmin(id){
+  if(!confirm('¿Borrar este aviso para todo el mundo?')) return;
+  const { error } = await sb.from('avisos').delete().eq('id', id);
+  if(error){ showToast('No se pudo borrar: '+error.message); return; }
+  showToast('Aviso borrado.');
+  await renderAdmin();
+}
 async function avisosIndividualesHtml(c){
   const { data, error } = await sb.from('avisos').select('*, personas(nombre,apellidos)')
     .eq('compania', c).not('persona_id','is',null)
@@ -2141,6 +2176,39 @@ function fmtFecha(fechaStr){
 }
 
 /* ---- Alumno ---- */
+async function estimacionProximoServicioHtml(personaId){
+  const { data: hist } = await sb.from('servicios').select('fecha,tipo,turno')
+    .eq('persona_id', personaId).order('fecha');
+  if(!hist || hist.length<2) return '';
+  const grupos = {};
+  hist.forEach(s=>{
+    const k = s.tipo+(s.tipo==='imaginaria' ? ('-turno'+s.turno) : '');
+    (grupos[k] = grupos[k] || []).push(s.fecha);
+  });
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const estimaciones = [];
+  Object.entries(grupos).forEach(([k, fechas])=>{
+    if(fechas.length<2) return;
+    const ultimaFecha = fechas[fechas.length-1];
+    const ultima = new Date(ultimaFecha+'T00:00:00');
+    if(ultima < hoy) return; // ya está en el pasado, no sirve de referencia útil
+    let gaps = [];
+    for(let i=1;i<fechas.length;i++){
+      gaps.push((new Date(fechas[i]+'T00:00:00') - new Date(fechas[i-1]+'T00:00:00')) / 86400000);
+    }
+    const media = Math.round(gaps.reduce((a,b)=>a+b,0)/gaps.length);
+    const estimada = new Date(ultima.getTime() + media*86400000);
+    estimaciones.push({ k, fecha: fmt(estimada) });
+  });
+  if(estimaciones.length===0) return '';
+  const TIPO_LABEL2 = { cuartelero:'Cuartelero', imaginaria_cuartelero:'Imaginaria de Cuartelero', imaginaria_imaginaria:'Imaginaria de Imaginaria' };
+  const nombreGrupo = k => k.startsWith('imaginaria-turno') ? 'Imaginaria (turno '+k.split('turno')[1]+')' : (TIPO_LABEL2[k]||k);
+  return `<div class="servicio-card" style="border-color:var(--danger);">
+    <div class="titulo" style="color:var(--danger);">⚠️ Estimación aproximada — no es un dato confirmado</div>
+    <div class="meta">Basado en cada cuánto te ha tocado hasta ahora, no en el cuadrante real:</div>
+    ${estimaciones.map(e=>`<div class="meta" style="color:var(--danger);">${nombreGrupo(e.k)} — sobre el ${e.fecha}</div>`).join('')}
+  </div>`;
+}
 async function renderAlumnoServicios(){
   document.getElementById('alumno-week-select').innerHTML = '';
   document.getElementById('alumno-notice').innerHTML = '';
@@ -2157,7 +2225,7 @@ async function renderAlumnoServicios(){
   const propios = (todos||[]).filter(s=>s.persona_id===persona.id);
   let html = '';
   if(propios.length===0){
-    html = '<div class="small-note">No tienes servicios asignados esta semana.</div>';
+    html = '<div class="small-note">No tienes servicios asignados esta semana.</div>' + await estimacionProximoServicioHtml(persona.id);
   }
   propios.forEach(s=>{
     const restoEseDia = (todos||[]).filter(o=> o.fecha===s.fecha && o.persona_id!==persona.id);
@@ -2359,6 +2427,86 @@ async function marcarDeudaSaldada(id){
   const { error } = await sb.from('deudas_servicio').update({ saldada: true }).eq('id', id);
   if(error){ showToast('No se pudo actualizar: '+error.message); return; }
   await renderAdminServicios();
+}
+function normTxtJS(s){
+  return (s||'').toString().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/-/g,' ').replace(/\s+/g,' ').trim().toUpperCase();
+}
+async function importarExcelServicios(){
+  const fileInput = document.getElementById('serv-excel-file');
+  const resEl = document.getElementById('serv-excel-resultado');
+  const file = fileInput.files[0];
+  if(!file){ showToast('Elige primero el archivo Excel.'); return; }
+  resEl.innerHTML = '<div class="small-note">Leyendo el Excel…</div>';
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:'array', cellDates:true });
+    const sheetName = wb.SheetNames.includes('GUARDIAS DE ORDEN') ? 'GUARDIAS DE ORDEN' : wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    const cell = (r,c) => { const o = ws[XLSX.utils.encode_cell({r,c})]; return o ? o.v : null; };
+
+    // columnas de días con datos (fila 2 = fecha, en la primera columna de cada pareja C/IM, empezando en col K = índice 10)
+    const filledCols = [];
+    for(let c=10; c<=range.e.c; c+=2){
+      const dateVal = cell(1,c);
+      if(!dateVal) continue;
+      let hasData = false;
+      for(let r=3; r<=range.e.r; r++){ if(cell(r,c) || cell(r,c+1)){ hasData=true; break; } }
+      if(hasData) filledCols.push({ col:c, fecha: ymd(dateVal instanceof Date ? dateVal : new Date(dateVal)) });
+    }
+    if(filledCols.length===0){ resEl.innerHTML = '<div class="small-note" style="color:var(--danger);">No he encontrado ninguna columna de día con datos. ¿Es la hoja "GUARDIAS DE ORDEN"?</div>'; return; }
+
+    const filas = [];
+    for(let r=3; r<=range.e.r; r++){
+      const ap1 = cell(r,2), ap2 = cell(r,3), nom = cell(r,4);
+      if(!ap1 && !nom) continue;
+      const apellidos = `${ap1||''} ${ap2||''}`.trim();
+      filledCols.forEach(({col,fecha})=>{
+        const vC = cell(r,col), vIM = cell(r,col+1);
+        if(vC==='C') filas.push({fecha, tipo:'cuartelero', turno:0, apellidos, nombre:nom});
+        else if(vC==='IC') filas.push({fecha, tipo:'imaginaria_cuartelero', turno:0, apellidos, nombre:nom});
+        if(vIM==='I I') filas.push({fecha, tipo:'imaginaria_imaginaria', turno:0, apellidos, nombre:nom});
+        else if(typeof vIM==='string' && / I$/.test(vIM)){
+          const n = parseInt(vIM.split(' ')[0],10);
+          if(!isNaN(n) && n>=1 && n<=4) filas.push({fecha, tipo:'imaginaria', turno:n, apellidos, nombre:nom});
+        }
+      });
+    }
+    if(filas.length===0){ resEl.innerHTML = '<div class="small-note" style="color:var(--danger);">No he encontrado ninguna fila de servicio en las columnas con datos.</div>'; return; }
+
+    const c = CURRENT.compania;
+    const { data: roster } = await sb.from('personas').select('id,apellidos,nombre').eq('compania', c);
+    const mapa = new Map();
+    (roster||[]).forEach(p=> mapa.set(normTxtJS(p.apellidos)+'|'+normTxtJS(p.nombre), p.id));
+
+    const paraInsertar = [];
+    const sinEmparejar = new Set();
+    filas.forEach(f=>{
+      const pid = mapa.get(normTxtJS(f.apellidos)+'|'+normTxtJS(f.nombre));
+      if(pid) paraInsertar.push({ compania:c, fecha:f.fecha, tipo:f.tipo, turno:f.turno, persona_id:pid });
+      else sinEmparejar.add(f.apellidos+', '+f.nombre);
+    });
+
+    resEl.innerHTML = `<div class="small-note">Importando ${paraInsertar.length} filas…</div>`;
+    // Supabase upsert admite como mucho unos cuantos miles por llamada; con 113x~40 días sobra de sobra en un solo lote, pero lo troceamos por si acaso
+    const LOTE = 500;
+    let importadas = 0;
+    for(let i=0; i<paraInsertar.length; i+=LOTE){
+      const trozo = paraInsertar.slice(i, i+LOTE);
+      const { error } = await sb.from('servicios').upsert(trozo, { onConflict:'compania,fecha,tipo,turno' });
+      if(error){ resEl.innerHTML = `<div class="small-note" style="color:var(--danger);">Fallo importando: ${error.message}</div>`; return; }
+      importadas += trozo.length;
+    }
+
+    resEl.innerHTML = `
+      <div class="servicio-card">
+        <div class="titulo">✅ ${importadas} filas importadas (${filledCols.length} días leídos, del ${filledCols[0].fecha} al ${filledCols[filledCols.length-1].fecha})</div>
+        ${sinEmparejar.size ? `<div class="meta" style="color:var(--danger);margin-top:6px;">${sinEmparejar.size} nombres del Excel no encontraron a nadie en la app:<br>${Array.from(sinEmparejar).join('<br>')}</div>` : '<div class="meta">Todos los nombres encajaron.</div>'}
+      </div>`;
+    await renderAdminServicios();
+  }catch(e){
+    resEl.innerHTML = `<div class="small-note" style="color:var(--danger);">Error leyendo el archivo: ${e.message}</div>`;
+  }
 }
 async function exportServiciosExcel(){
   const c = CURRENT.compania;
