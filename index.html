@@ -141,6 +141,9 @@ table.roster tfoot td.name-cell{text-align:left;}
 .switch input:checked ~ .thumb{transform:translateX(18px);}
 .small-btn{background:none;border:1px solid var(--line);color:var(--olive);font-family:inherit;font-size:.72rem;padding:5px 10px;cursor:pointer;white-space:nowrap;}
 .small-btn.active{background:var(--olive);color:#fff;border-color:var(--olive);}
+.serv-view-btn{font-size:1rem;padding:14px 20px;font-weight:700;}
+.celda-vacia-serv{cursor:copy;}
+.celda-vacia-serv:hover{background:rgba(184,134,11,.15);}
 .big-btn{background:var(--card);border:1.5px solid var(--olive);color:var(--olive);font-family:inherit;font-size:.85rem;font-weight:600;padding:11px 16px;cursor:pointer;white-space:nowrap;}
 .big-btn:hover{background:var(--olive);color:#fff;}
 .section-btn-row{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 18px;}
@@ -371,11 +374,6 @@ body.mod-servicios h3.section-title{border-bottom-color:var(--brass);}
           <label class="switch"><input type="checkbox" id="serv-visible-toggle" onchange="toggleServiciosVisible(this.checked)"><span class="track"></span><span class="thumb"></span></label>
         </div>
       </div>
-      <div class="fixed-row" style="margin-bottom:10px;">
-        <button class="small-btn" id="serv-view-lista25" onclick="setServView('lista25')">📋 Ver lista de 25</button>
-        <button class="small-btn" id="serv-view-hoy" onclick="setServView('hoy')">📅 Ver servicios de hoy</button>
-        <button class="small-btn" id="serv-view-semana" onclick="setServView('semana')">🗓️ Ver servicios de esta semana</button>
-      </div>
       <div id="admin-serv-week-select"></div>
       <div class="admin-panel">
         <div class="panel-row" style="flex-wrap:wrap;">
@@ -417,20 +415,25 @@ body.mod-servicios h3.section-title{border-bottom-color:var(--brass);}
       </div>
       <div class="admin-panel" style="flex-direction:column;align-items:stretch;">
         <div class="switch-label">Mover a todos desde aquí
-          <span class="sub2">Solo para Cuartelero e Imaginaria de Cuartelero. Si alguien no puede hacer su turno en la fecha elegida, esto lo salta y desplaza a todos los que venían detrás, un puesto cada uno, hasta diciembre. Para las imaginarias de turno, usa mejor sustituir directamente en la tabla.</span>
+          <span class="sub2">Solo para Cuartelero. Si alguien no puede hacer su turno en la fecha elegida, esto lo salta y desplaza a todos los que venían detrás, un puesto cada uno, hasta diciembre — y recalcula sola la Imaginaria de Cuartelero de cada día afectado. Para las imaginarias de turno, usa mejor sustituir directamente en la tabla.</span>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
           <input type="date" id="desp-fecha" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;">
           <select id="desp-tipo" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;">
             <option value="cuartelero">Cuartelero</option>
-            <option value="imaginaria_cuartelero">Imaginaria de Cuartelero</option>
           </select>
         </div>
         <button class="small-btn danger" style="margin-top:8px;align-self:flex-start;" onclick="desplazarTurno()">↪️ Desplazar desde esta fecha</button>
       </div>
       <h3 class="section-title">Servicios de esta semana — las 113 seguidas</h3>
+      <div class="fixed-row serv-view-row" style="margin-bottom:14px;">
+        <button class="small-btn serv-view-btn" id="serv-view-lista25" onclick="setServView('lista25')">📋 Ver lista de 25</button>
+        <button class="small-btn serv-view-btn" id="serv-view-hoy" onclick="setServView('hoy')">📅 Ver servicios de hoy</button>
+        <button class="small-btn serv-view-btn" id="serv-view-semana" onclick="setServView('semana')">🗓️ Ver servicios de esta semana</button>
+      </div>
       <div id="admin-servicios-leyenda" class="fixed-row" style="margin-bottom:10px;"></div>
       <div id="admin-servicios-paginacion" class="fixed-row" style="margin-bottom:10px;"></div>
+      <p class="small-note">🖱️ Doble clic en una casilla vacía para asignar el servicio ahí directamente.</p>
       <div class="table-scroll"><table class="roster" id="admin-servicios-tabla"></table></div>
       <h3 class="section-title">Solicitudes de cambio pendientes</h3>
       <div id="admin-cambios-pendientes"></div>
@@ -891,6 +894,40 @@ async function renderAlumno(){
   const apuntesMap = await fetchApuntesMap(personaIds, ACTIVE_WEEK.key);
   PERNOCTA_SABADO_AGM = await fetchPernoctaSabadoAgmSetSeccion(persona.compania, persona.seccion, ACTIVE_WEEK.key);
   const open = weekIsOpen(ACTIVE_WEEK, horaCorte);
+
+  const { data: confRow } = await sb.from('confirmaciones').select('confirmado,confirmado_en').eq('persona_id', persona.id).eq('semana_inicio', ACTIVE_WEEK.key).maybeSingle();
+  const confirmado = !!(confRow && confRow.confirmado);
+  const confTs = confRow && confRow.confirmado_en ? new Date(confRow.confirmado_en).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : null;
+  document.getElementById('alumno-confirm').innerHTML = `
+    <div class="confirm-box ${confirmado?'done':'pending'}">
+      <input type="checkbox" id="confirm-check" ${confirmado?'checked':''} ${open?'':'disabled'} onchange="onConfirmToggle(this.checked)">
+      <label for="confirm-check">${confirmado
+        ? `He revisado esta semana y son las comidas que quiero.<span class="ts">Confirmado el ${confTs}</span>`
+        : `⚠️ NO HAS CONFIRMADO TUS COMIDAS DE ESTA SEMANA<span class="ts">Revisa la tabla y marca aquí cuando esté correcta</span>`}</label>
+    </div>`;
+
+  // — Justo aquí, pegado a PERNOCTA_SABADO_AGM recién calculado, para que nunca pueda desincronizarse con la tabla —
+  if(selectedDiaComida===null){ selectedDiaComida = diaDeHoyEnSemana(ACTIVE_WEEK); }
+  if(selectedDiaComida===null){ selectedDiaComida = 0; }
+  document.getElementById('alumno-dia-selector').innerHTML = DAY_NAMES.map((dn,i)=>
+    `<button class="small-btn${i===selectedDiaComida?' active':''}" onclick="setDiaComida(${i})">${dn} ${fmt(ACTIVE_WEEK.days[i])}</button>`
+  ).join('');
+  const colsDelDia = cols.filter(c=>c.day===selectedDiaComida);
+  const tienen = colsDelDia.filter(c=>getVal(persona.id,c,apuntesMap)).map(c=>c.type);
+  const noTienen = colsDelDia.filter(c=>!getVal(persona.id,c,apuntesMap)).map(c=>c.type);
+  const nombreComida = t => t==='desayuno'?'desayuno':t==='comida'?'comida':'cena';
+  const listar = arr => arr.length<=1 ? (arr.map(nombreComida)[0]||'') : arr.slice(0,-1).map(nombreComida).join(', ')+' y '+nombreComida(arr[arr.length-1]);
+  const esHoy = diaDeHoyEnSemana(ACTIVE_WEEK)===selectedDiaComida;
+  const diaPalabra = esHoy ? 'Hoy' : DAY_NAMES_FULL[selectedDiaComida].charAt(0).toUpperCase()+DAY_NAMES_FULL[selectedDiaComida].slice(1);
+  let frase;
+  if(noTienen.length===0) frase = `${diaPalabra} tienes ${listar(tienen)}.`;
+  else if(tienen.length===0) frase = `${diaPalabra} no tienes ninguna comida marcada.`;
+  else frase = `${diaPalabra} no tienes ${listar(noTienen)}, solo tienes ${listar(tienen)}.`;
+  document.getElementById('alumno-dia-resumen').innerHTML = `
+    <div class="servicio-card">
+      <div class="titulo">${frase}</div>
+    </div>
+    ${!confirmado ? `<div class="notice closed" style="margin-top:8px;"><span>⚠️ No has confirmado esta semana todavía — lo de arriba podría cambiar hasta que confirmes</span></div>` : ''}`;
   const tableScrollEl = document.getElementById('alumno-table-scroll');
   tableScrollEl.classList.toggle('plazo-abierto', open);
   tableScrollEl.classList.toggle('plazo-cerrado', !open);
@@ -949,38 +986,6 @@ async function renderAlumno(){
   document.getElementById('alumno-summary-quienes').innerHTML = `
     <div id="quienes-comida" class="servicio-card hidden"><div class="titulo">Comida ${DAY_NAMES[nextComidaOpcional.day]} — quién de tu sección</div><div class="meta">${listaNombres(comidaQuienes)}</div></div>
     <div id="quienes-cena" class="servicio-card hidden"><div class="titulo">Cena ${DAY_NAMES[nextCenaCol.day]} — quién de tu sección</div><div class="meta">${listaNombres(cenaQuienes)}</div></div>`;
-
-  const { data: confRow } = await sb.from('confirmaciones').select('confirmado,confirmado_en').eq('persona_id', persona.id).eq('semana_inicio', ACTIVE_WEEK.key).maybeSingle();
-  const confirmado = !!(confRow && confRow.confirmado);
-  const confTs = confRow && confRow.confirmado_en ? new Date(confRow.confirmado_en).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : null;
-  document.getElementById('alumno-confirm').innerHTML = `
-    <div class="confirm-box ${confirmado?'done':'pending'}">
-      <input type="checkbox" id="confirm-check" ${confirmado?'checked':''} ${open?'':'disabled'} onchange="onConfirmToggle(this.checked)">
-      <label for="confirm-check">${confirmado
-        ? `He revisado esta semana y son las comidas que quiero.<span class="ts">Confirmado el ${confTs}</span>`
-        : `⚠️ NO HAS CONFIRMADO TUS COMIDAS DE ESTA SEMANA<span class="ts">Revisa la tabla y marca aquí cuando esté correcta</span>`}</label>
-    </div>`;
-
-  if(selectedDiaComida===null) selectedDiaComida = diaDeHoyEnSemana(ACTIVE_WEEK); if(selectedDiaComida===null) selectedDiaComida = 0;
-  document.getElementById('alumno-dia-selector').innerHTML = DAY_NAMES.map((dn,i)=>
-    `<button class="small-btn${i===selectedDiaComida?' active':''}" onclick="setDiaComida(${i})">${dn} ${fmt(ACTIVE_WEEK.days[i])}</button>`
-  ).join('');
-  const colsDelDia = cols.filter(c=>c.day===selectedDiaComida);
-  const tienen = colsDelDia.filter(c=>getVal(persona.id,c,apuntesMap)).map(c=>c.type);
-  const noTienen = colsDelDia.filter(c=>!getVal(persona.id,c,apuntesMap)).map(c=>c.type);
-  const nombreComida = t => t==='desayuno'?'desayuno':t==='comida'?'comida':'cena';
-  const listar = arr => arr.length<=1 ? (arr.map(nombreComida)[0]||'') : arr.slice(0,-1).map(nombreComida).join(', ')+' y '+nombreComida(arr[arr.length-1]);
-  const esHoy = diaDeHoyEnSemana(ACTIVE_WEEK)===selectedDiaComida;
-  const diaPalabra = esHoy ? 'Hoy' : DAY_NAMES_FULL[selectedDiaComida].charAt(0).toUpperCase()+DAY_NAMES_FULL[selectedDiaComida].slice(1);
-  let frase;
-  if(noTienen.length===0) frase = `${diaPalabra} tienes ${listar(tienen)}.`;
-  else if(tienen.length===0) frase = `${diaPalabra} no tienes ninguna comida marcada.`;
-  else frase = `${diaPalabra} no tienes ${listar(noTienen)}, solo tienes ${listar(tienen)}.`;
-  document.getElementById('alumno-dia-resumen').innerHTML = `
-    <div class="servicio-card">
-      <div class="titulo">${frase}</div>
-    </div>
-    ${!confirmado ? `<div class="notice closed" style="margin-top:8px;"><span>⚠️ No has confirmado esta semana todavía — lo de arriba podría cambiar hasta que confirmes</span></div>` : ''}`;
 
   const nowIso = new Date().toISOString();
   const { data: avisos } = await sb.from('avisos').select('*')
@@ -2274,6 +2279,22 @@ async function mostrarSugerenciaServicio(){
   const sig = roster[siguienteIdx];
   el.innerHTML = `💡 Según el turno, le tocaría a: <b>${sig.apellidos}, ${sig.nombre}</b>`;
 }
+async function actualizarEspejoServicio(fecha, tipo, turno, persona_id){
+  // IC e II son un espejo de lo que toca AL DÍA SIGUIENTE — si cambia el
+  // Cuartelero o la Imaginaria turno 1, hay que refrescar el espejo del día de antes
+  const diaAnterior = ymd(new Date(new Date(fecha+'T00:00:00').getTime() - 86400000));
+  if(tipo==='cuartelero'){
+    await sb.from('servicios').upsert(
+      { compania: CURRENT.compania, fecha: diaAnterior, tipo: 'imaginaria_cuartelero', turno: 0, persona_id },
+      { onConflict: 'compania,fecha,tipo,turno' }
+    );
+  } else if(tipo==='imaginaria' && turno===1){
+    await sb.from('servicios').upsert(
+      { compania: CURRENT.compania, fecha: diaAnterior, tipo: 'imaginaria_imaginaria', turno: 0, persona_id },
+      { onConflict: 'compania,fecha,tipo,turno' }
+    );
+  }
+}
 async function asignarServicio(){
   const fecha = document.getElementById('serv-fecha').value;
   const tipo = document.getElementById('serv-tipo').value;
@@ -2285,7 +2306,8 @@ async function asignarServicio(){
     { onConflict: 'compania,fecha,tipo,turno' }
   );
   if(error){ showToast('No se pudo asignar: '+error.message); return; }
-  showToast('Servicio asignado.');
+  await actualizarEspejoServicio(fecha, tipo, turno, persona_id);
+  showToast('Servicio asignado.' + ((tipo==='cuartelero'||(tipo==='imaginaria'&&turno===1)) ? ' Imaginaria de cuartelero/imaginaria del día anterior actualizada también.' : ''));
   await renderAdminServicios();
 }
 async function eliminarServicio(id){
@@ -2293,6 +2315,13 @@ async function eliminarServicio(id){
   const { error } = await sb.from('servicios').delete().eq('id', id);
   if(error){ showToast('No se pudo quitar: '+error.message); return; }
   await renderAdminServicios();
+}
+function abrirAsignarRapido(personaId, fecha){
+  document.getElementById('serv-fecha').value = fecha;
+  document.getElementById('serv-persona').value = personaId;
+  mostrarSugerenciaServicio();
+  document.getElementById('serv-tipo').scrollIntoView({behavior:'smooth', block:'center'});
+  showToast('Fecha y persona ya elegidas. Falta el tipo — luego pulsa "+ Asignar".');
 }
 function prellenarSustitucion(fecha, tipo, turno){
   document.getElementById('serv-fecha').value = fecha;
@@ -2429,7 +2458,7 @@ async function renderAdminServicios(){
       tbody += `<tr><td class="name-cell">${p.apellidos}, ${p.nombre} <span style="color:var(--ink-soft);">(${c}${p.seccion})</span></td>`;
       week.days.forEach(d=>{
         const asignados = porPersonaDia[p.id+'|'+ymd(d)] || [];
-        tbody += asignados.length ? ('<td>'+asignados.map(badgeHtml).join(' ')+'</td>') : '<td></td>';
+        tbody += asignados.length ? ('<td>'+asignados.map(badgeHtml).join(' ')+'</td>') : `<td class="celda-vacia-serv" ondblclick="abrirAsignarRapido('${p.id}','${ymd(d)}')" title="Doble clic para asignar"></td>`;
       });
       tbody += '</tr>';
     });
@@ -2469,7 +2498,7 @@ async function renderAdminServicios(){
       tbody += `<tr><td class="name-cell">${p.apellidos}, ${p.nombre} <span style="color:var(--ink-soft);">(${c}${p.seccion})</span></td>`;
       week.days.forEach(d=>{
         const asignados = porPersonaDia[p.id+'|'+ymd(d)] || [];
-        tbody += asignados.length ? ('<td>'+asignados.map(badgeHtml).join(' ')+'</td>') : '<td></td>';
+        tbody += asignados.length ? ('<td>'+asignados.map(badgeHtml).join(' ')+'</td>') : `<td class="celda-vacia-serv" ondblclick="abrirAsignarRapido('${p.id}','${ymd(d)}')" title="Doble clic para asignar"></td>`;
       });
       tbody += '</tr>';
     });
