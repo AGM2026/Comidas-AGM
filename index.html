@@ -179,6 +179,9 @@ body.mod-servicios .stat-card .num{color:var(--brass);}
 body.mod-servicios h3.section-title{border-bottom-color:var(--brass);}
 .servicio-card{border:1px solid var(--line);background:var(--card);padding:12px 14px;margin-bottom:10px;}
 .servicio-card .titulo{font-weight:700;font-size:.85rem;}
+#alumno-dia-resumen .servicio-card{padding:18px 20px;border-width:2px;border-color:var(--olive);}
+#alumno-dia-resumen .servicio-card .titulo{font-size:1.15rem;line-height:1.4;}
+#alumno-dia-selector .small-btn{font-size:.95rem;padding:10px 16px;}
 .servicio-card .meta{font-size:.75rem;color:var(--ink-soft);margin-top:2px;}
 .servicio-card .grupo{margin-top:8px;font-size:.78rem;border-top:1px solid var(--line);padding-top:8px;}
 .badge-estado{font-size:.68rem;padding:2px 8px;font-weight:700;}
@@ -283,14 +286,9 @@ body.mod-servicios h3.section-title{border-bottom-color:var(--brass);}
 
     <div id="alumno-comidas-mod">
       <div id="alumno-confirm"></div>
-      <h3 class="section-title">Mirar solo un día</h3>
-      <div id="alumno-dia-selector" class="fixed-row" style="margin-bottom:8px;"></div>
-      <div id="alumno-dia-resumen" style="margin-bottom:18px;"></div>
-      <div class="fixed-row">
-        <div class="fixed-pill">🔒 Las casillas ya marcadas y bloqueadas son <b>obligatorias</b> — no hace falta tocarlas</div>
-        <div class="fixed-pill">✏️ Solo puedes marcar/desmarcar <b>tu cena</b> de cada día, tu <b>comida de viernes, sábado y domingo</b> y tu <b>desayuno del domingo</b></div>
-        <div class="fixed-pill">🔒 Si duermes en la AGM el sábado (Pernoctas), el <b>desayuno del domingo</b> se te pone obligatorio solo</div>
-      </div>
+      <h3 class="section-title" style="font-size:1.15rem;">TUS PRÓXIMAS COMIDAS</h3>
+      <div id="alumno-dia-selector" class="fixed-row" style="margin-bottom:12px;"></div>
+      <div id="alumno-dia-resumen" style="margin-bottom:22px;font-size:1.15rem;"></div>
       <h3 class="section-title">Comidas de la semana — desayuno, comida y cena</h3>
       <div id="alumno-view-toggle"></div>
       <div class="table-scroll" id="alumno-table-scroll"><table class="roster" id="alumno-table"></table></div>
@@ -299,6 +297,11 @@ body.mod-servicios h3.section-title{border-bottom-color:var(--brass);}
       <p class="small-note">👆 Toca una de las tarjetas de arriba para ver quién de tu sección tiene esa comida.</p>
       <div id="alumno-summary-quienes"></div>
       <p class="small-note">Puedes ver el detalle de tu sección para tener control, pero solo puedes marcar tu propia fila.</p>
+      <div class="fixed-row" style="margin-top:24px;">
+        <div class="fixed-pill">🔒 Las casillas ya marcadas y bloqueadas son <b>obligatorias</b> — no hace falta tocarlas</div>
+        <div class="fixed-pill">✏️ Solo puedes marcar/desmarcar <b>tu cena</b> de cada día, tu <b>comida de viernes, sábado y domingo</b> y tu <b>desayuno del domingo</b></div>
+        <div class="fixed-pill">🔒 Si duermes en la AGM el sábado (Pernoctas), el <b>desayuno del domingo</b> se te pone obligatorio solo</div>
+      </div>
     </div>
 
     <div id="alumno-pernoctas-mod" class="hidden">
@@ -397,7 +400,7 @@ body.mod-servicios h3.section-title{border-bottom-color:var(--brass);}
           <span class="sub2">Compañía entera, en orden de la Z a la A (de abajo hacia arriba, como se turnan) — elige día (de la semana de arriba), tipo y persona</span>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
-          <select id="serv-fecha" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;"></select>
+          <select id="serv-fecha" onchange="mostrarSugerenciaServicio()" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;"></select>
           <select id="serv-tipo" onchange="onServTipoChange()" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;">
             <option value="cuartelero">Cuartelero</option>
             <option value="imaginaria">Imaginaria (turno)</option>
@@ -409,6 +412,7 @@ body.mod-servicios h3.section-title{border-bottom-color:var(--brass);}
           </select>
           <select id="serv-persona" style="padding:8px 10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:.85rem;"></select>
         </div>
+        <div id="serv-sugerencia" class="small-note" style="margin-top:6px;"></div>
         <button class="small-btn" style="margin-top:8px;align-self:flex-start;" onclick="asignarServicio()">+ Asignar</button>
       </div>
       <div class="admin-panel" style="flex-direction:column;align-items:stretch;">
@@ -2242,6 +2246,33 @@ async function enviarSolicitudCambio(servicioId){
 function onServTipoChange(){
   const tipo = document.getElementById('serv-tipo').value;
   document.getElementById('serv-turno').classList.toggle('hidden', tipo!=='imaginaria');
+  mostrarSugerenciaServicio();
+}
+async function mostrarSugerenciaServicio(){
+  const el = document.getElementById('serv-sugerencia');
+  const tipo = document.getElementById('serv-tipo').value;
+  const fecha = document.getElementById('serv-fecha').value;
+  if(!el || !fecha) return;
+  if(tipo!=='cuartelero' && tipo!=='imaginaria_cuartelero'){ el.textContent = ''; return; }
+  el.textContent = 'Buscando quién toca…';
+  const c = CURRENT.compania;
+  const { data: roster } = await sb.from('personas').select('id,nombre,apellidos').eq('compania', c).order('apellidos');
+  const wd = new Date(fecha+'T00:00:00').getDay(); // 0=domingo..6=sabado
+  const esFinde = (wd===0 || wd===6);
+  let query = sb.from('servicios').select('persona_id,fecha').eq('compania', c).eq('tipo', tipo).lt('fecha', fecha).order('fecha',{ascending:false}).limit(30);
+  const { data: ultimos } = await query;
+  let ultimo = null;
+  if(tipo==='cuartelero'){
+    ultimo = (ultimos||[]).find(s=>{ const w = new Date(s.fecha+'T00:00:00').getDay(); const f = (w===0||w===6); return f===esFinde; });
+  } else {
+    ultimo = (ultimos||[])[0];
+  }
+  if(!ultimo){ el.textContent = 'No hay histórico suficiente para sugerir.'; return; }
+  const idx = (roster||[]).findIndex(p=>p.id===ultimo.persona_id);
+  if(idx===-1){ el.textContent = ''; return; }
+  const siguienteIdx = (idx - 1 + roster.length) % roster.length;
+  const sig = roster[siguienteIdx];
+  el.innerHTML = `💡 Según el turno, le tocaría a: <b>${sig.apellidos}, ${sig.nombre}</b>`;
 }
 async function asignarServicio(){
   const fecha = document.getElementById('serv-fecha').value;
